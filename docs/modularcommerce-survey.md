@@ -26,7 +26,10 @@
 
 **Solution:** `ModularCommerce.sln` (repo kökü). `.slnx` yok.
 
-**Toplam 68 `.csproj`** — 47'si `src/`, 21'i `tests/` altında.
+**Toplam 66 `.csproj`** — 48'i `src/`, 18'i `tests/` altında.
+
+> Bu sayı Faz 1'de FlowLens'in kendi çıktısıyla doğrulandı (`Loaded 66/66 projects`).
+> Dağılım: 9 modül × 5 katman = 45, Host 1, Shared 2 → 48 src; 18 test projesi.
 
 ### 1.1 Modüller — 9 adet
 
@@ -68,7 +71,7 @@ Referans yönü: `Api → Infrastructure → Application → {Domain, Contracts}
 
 **Test projeleri:** 21 adet — `ModularCommerce.ArchitectureTests`, modül başına `*.UnitTests` / `*.IntegrationTests`, ve `ModularCommerce.TestKit`.
 
-> **FlowLens notu:** `MSBuildWorkspace` ile solution yüklerken **68 proje** açılacak. Faz 1'de test projelerini filtrelemek isteyebilirsin (`tests/` prefix'i), aksi halde node sayısı gereksiz şişer.
+> **FlowLens notu:** `MSBuildWorkspace` ile solution yüklerken **66 proje** açılacak. Faz 1'de test projelerini filtrelemek isteyebilirsin (`tests/` prefix'i), aksi halde node sayısı gereksiz şişer.
 
 ### 1.4 Build ortamı
 
@@ -632,7 +635,7 @@ Keşiften çıkan, roadmap'te **yazılanla gerçeğin ayrıştığı** noktalar:
 | Faz 3: "EF Core `IModel`" (tekil) | **8 ayrı DbContext**, 8 ayrı `IModel` | Modül başına döngü; Discovery'yi ayrı ele al (pgvector) |
 | Veri modeli: `Handler` = "MediatR/Application layer" | MediatR yok, düz sınıf | `*Handler` soneki + `.Application` namespace'i ile tanı |
 | Veri modeli: `Endpoint` = "Controller action / minimal API mapping" | Sadece minimal API, üstelik **3 katmanlı `MapGroup`** | §2.3'teki basitleştirilmiş prefix+suffix stratejisi |
-| Faz 1: "solution'ı yükle" | 68 proje, 21'i test | Test projelerini filtrele (sahte `PUBLISHES` kenarları üretiyorlar, §6.3) |
+| Faz 1: "solution'ı yükle" | 66 proje, 18'i test | Test projelerini filtrele (sahte `PUBLISHES` kenarları üretiyorlar, §6.3) |
 
 ### 8.1 Faz 2 için önerilen ilk endpoint
 

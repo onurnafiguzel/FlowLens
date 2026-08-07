@@ -1,0 +1,21 @@
+<Project>
+
+  <!--
+    MSBuildLocator refuses to build (MSBL001) when an MSBuild assembly can arrive from NuGet at
+    runtime, and Microsoft.CodeAnalysis.Workspaces.MSBuild drags Microsoft.Build.Framework in
+    transitively. Two copies of that assembly is precisely the failure mode MSBuildLocator
+    exists to prevent: the resolver installed by RegisterDefaults() must be the one that binds
+    MSBuild, using the .NET SDK's copy, not a NuGet copy sitting in the output folder.
+
+      ExcludeAssets="runtime"  -> compile against it, do not copy it to bin/
+      PrivateAssets="all"      -> do not flow it on to referencing projects
+
+    Declared here rather than per-csproj because the transitive reference reaches every project
+    in the solution, and the version is pinned to the transitive one to avoid NU1605.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Build.Framework" Version="17.11.48"
+                      ExcludeAssets="runtime" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>
