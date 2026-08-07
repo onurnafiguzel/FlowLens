@@ -9,11 +9,27 @@
 
 ---
 
-## L1 — Minimal API endpoint'lerinin tamamı lambda; `MethodDeclarationSyntax` bunları yakalamıyor
+## L1 — Minimal API endpoint'lerinin tamamı lambda ✅ KAPANDI (Faz 2)
 
-**Durum:** Açık. Faz 2'de ele alınacak.
-**Şu an etkisi:** Faz 1 metot sayımı endpoint'leri içermiyor.
-**Faz 2 için etkisi:** Bu, call graph'ın **giriş noktalarının tamamı** demek. Çözülmeden Faz 2 başlayamaz.
+**Durum:** **Kapandı.** Faz 2'de `EndpointDiscovery` + `RoutePrefixResolver` ile çözüldü.
+
+**Doğrulama (2026-08-07 ölçümü):**
+
+```
+25 endpoints · 0 unresolved route · 0 candidates eliminated · 0 multi-mount
+pass 1: 25 map calls, 11 prefix propagations · pass 2: 19 methods reached
+```
+
+24 modül endpoint'inin **tamamı** doğru route'la bulundu (survey §2.2 ile birebir), artı
+`Program.cs`'teki `GET /`. `POST /api/ordering/checkout` node'undan
+`CheckoutHandler.HandleAsync`'e `CALLS` kenarı var. Beş adımlı prefix zinciri
+(`Program.cs → IModule.MapEndpoints → 9 implementasyon → MapOrderEndpoints → MapGroup("") → MapPost`)
+uçtan uca çözülüyor.
+
+Test kapsamı: `RoutePrefixResolverTests` (7 test, sentetik) + `Phase2IntegrationTests` (gerçek repo).
+
+> **Aşağıdaki bölüm tarihsel kayıt olarak korunuyor** — sorunun ne olduğunu ve nasıl çözüldüğünü
+> anlatıyor.
 
 ### Bulgu
 
@@ -61,10 +77,17 @@ bağlamak ve route'unu çözmek — faz sınırının yanlış tarafında yapmak
 4. Handler'ı lambda'nın parametre listesinden **çıkarmaya çalışma** — gövdedeki
    `handler.HandleAsync(...)` invocation'ını normal şekilde çöz. Daha az özel-durum, aynı sonuç.
 
-### Doğrulama
+### Çözümün iki kritik detayı (Faz 2'de öğrenildi)
 
-Faz 2 bittiğinde şu doğru olmalı: `Endpoint` tipli node sayısı = 24 (Shipping hariç 8 modül),
-ve `POST /api/ordering/checkout` node'undan `CheckoutHandler.HandleAsync`'e bir `CALLS` kenarı var.
+1. **Extension method reduced/unreduced ayrımı.** `group.MapOrderEndpoints()` çağrı yerinde
+   *reduced* forma (parametresiz), gövde içindeki `GetEnclosingSymbol` ise *unreduced* forma
+   (`this` parametreli) bağlanıyor. Normalize edilmezse iki farklı anahtar olur ve **her modülün
+   prefix'i kaybolur** — ilk çalıştırmada 24/25 route `unresolved` çıktı. Çözüm:
+   `NodeId.Canonical` = `(symbol.ReducedFrom ?? symbol).OriginalDefinition`.
+2. **Map çağrısının kendi relative prefix'i.** `endpoints.MapGroup("/api").MapPost(...)` gibi
+   inline zincirlerde prefix, çağrının kendi `Origin`'inde durur. Pass 2'nin Parameter dalı önce
+   bunu düşürüyordu; `RoutePrefixResolverTests` yakaladı. ModularCommerce yerel değişken
+   kullandığı için gerçek repoda görünmüyordu — sentetik testin değeri tam olarak bu.
 
 ---
 
@@ -89,9 +112,14 @@ gerekecek. O zaman ele alınacak.
 
 ## L3 — Interface çağrıları implementasyona değil, contract'a bağlanır
 
-**Durum:** Açık. Faz 2'de `SymbolFinder` ile kısmen çözülecek; tamamen çözülemez.
+**Durum:** Faz 2'de `SymbolFinder` ile ele alındı; **kalıcı olarak kısmi.**
 
-Faz 1'in SemanticModel demo'su bunu ölçtü: `CheckoutHandler.HandleAsync` içindeki **49
+**Faz 2 ölçümü** (checkout trace'i): 106 node, 185 kenar, **23 `SymbolFinder` çağrısı, 6 cache
+isabeti**. Politika `AllImplementations` — belirsiz olan her node `ambiguous` işaretli.
+Gözlenen belirsizlikler: `ICartRepository` (2), `IProductReader` (2), `IProductQueries` (2),
+`IReservationStrategy` (3), `INotificationChannel` (3 — `Email`/`Webhook`/`FaultInjecting`).
+
+Faz 1'in SemanticModel demo'su bunu ölçmüştü: `CheckoutHandler.HandleAsync` içindeki **49
 invocation'ın 10'u** bir interface üyesine bağlanıyor.
 
 ```
@@ -119,7 +147,13 @@ kategori ayrı sayılacak.
 
 ## L4 — `Publish<T>()` generic çağrısı yok; event tipi runtime'da çözülüyor
 
-**Durum:** Açık. Faz 2'de registry okuma stratejisiyle ele alınacak.
+**Durum:** **Çözüldü** (Faz 2), registry okuma stratejisiyle.
+
+`DomainEventBridge` iki registry'den **4 domain→integration eşlemesi** okuyor
+(`OrderPaid`, `OrderCancelled`, `ProductCreated`, `ProductUpdated`). Checkout trace'inde
+`Order.MarkPaid --PUBLISHES--> Contracts.IntegrationEvents.OrderPaid --CONSUMES-->
+OrderPaidNotificationConsumer.Consume` zinciri kuruluyor; kenar üzerinde `raiseSite` +
+`mappingSite` kanıtı taşınıyor.
 
 Roadmap Faz 2 "`Publish<T>()` görünce generic type argument'ı yakala" diyor. ModularCommerce'te
 `src/` altında **generic `Publish<T>` çağrısı yok**. Her iki outbox dispatcher da tip-silinmiş
@@ -155,6 +189,162 @@ Plan: `new DbContextOptionsBuilder<T>().UseNpgsql(sahte-connection-string)` ile 
 ve veri kaynağı ilk bağlantıda tip kataloğunu cache'liyor. Ayrıca `discovery.product_embeddings`
 tablosunun `vector(1536)` kolonu migration içinde **raw SQL** ile eklendiği için `IModel`'de
 zaten görünmeyecek. Discovery'nin kolon seviyesi eşlemesi Faz 3'te eksik kalacak — bu bilinçli.
+
+---
+
+## L7 — Map fiili olmayan endpoint kayıtları bulunmuyor
+
+**Durum:** Açık. Gerektiğinde ele alınacak.
+**Keşfedildiği yer:** Faz 2 ilk çalıştırması. **Faz 2 doğrulamasında detaylandırıldı.**
+
+> **Doğrulama notu:** "Sözlüğe bir girdi ekle" göründüğü kadar basit değil. `MapHealthChecks`
+> **tüm HTTP metotlarını** eşliyor — `MapGet` gibi tek bir fiile karşılık gelmiyor. Bir
+> `Endpoint` node'u üretmek için ya `(ANY, /health/live)` gibi bir sözde-fiil uydurmak ya da
+> `HttpMethod` alanını nullable yapmak gerekiyor. İkisi de veri modeli kararı; roadmap §5
+> "genişletme isteği gelirse önce sor" diyor. Faz 3'te `graph.json` şeması sabitlenirken karara
+> bağlanacak.
+
+`EndpointDiscovery` yalnız `MapGet|MapPost|MapPut|MapDelete|MapPatch` fiillerini tanıyor.
+ModularCommerce'in **`/health/live` ve `/health/ready`** endpoint'leri `MapHealthChecks` ile
+kaydediliyor (`Shared.Infrastructure/Observability`), dolayısıyla graph'ta yok.
+
+Bu sessiz bir kayıp **değil** — sayı raporlanıyor (25 bulundu, survey baseline'ı 24 modül
+endpoint'i) ve fark açıklanabilir. Ama tam olmadığı kayda geçsin.
+
+Aynı kategoride ele alınmayanlar: `MapMethods`, `MapFallback`, `MapHub` (SignalR),
+`MapGrpcService`. Hiçbiri bu repoda yok.
+
+**Çözüm maliyeti:** düşük — `MapVerbs` sözlüğüne girdi eklemek + `MapMethods` için fiil dizisini
+argümandan okumak. Faz 3'te `graph.json` üretilirken ele alınabilir.
+
+---
+
+## L8 — Graph'ta Shared.Kernel gürültüsü
+
+**Durum:** Bilinçli kabul. Faz 3'te yeniden değerlendirilecek.
+
+Checkout trace'inin 106 node'unun 89'u `Method` tipinde ve önemli bir kısmı
+`Result.Success` / `Result.Failure` / `Error.Validation` gibi Shared.Kernel yardımcıları.
+Bunlar **gerçek çağrılar** — uydurma değil — ama impact analizi açısından bilgi taşımıyorlar.
+
+Faz 2'de filtrelenmedi çünkü "hangi çağrı önemsiz" kararı sezgisel ve roadmap'in
+"eksik, fazladan tehlikelidir" ilkesine ters. Faz 3'te `Forward()` traversal'ı tablo/kolon
+hedefine yürüdüğünde bu node'lar doğal olarak yaprak kalacak ve cevaba karışmayacak.
+
+Framework/NuGet metotları zaten graph'a **girmiyor** (`SourceLocation.IsInSource` filtresi) —
+`string.Join`, LINQ `Select`, `IValidator.ValidateAsync` gibi çağrılar dışarıda.
+
+---
+
+## L9 — Constructor çağrıları kenar üretmiyor
+
+**Durum:** Açık. **DÜZELTİLEBİLİR** (yapısal sınır değil). Faz 3'te karara bağlanacak.
+**Keşfedildiği yer:** Faz 2 doğrulaması, §5.1.
+
+`CallGraphWalker` yalnız `InvocationExpressionSyntax` geziyor; `ObjectCreationExpressionSyntax`
+kenar üretmiyor. Checkout zincirinde kaçırılanlar:
+
+```csharp
+new CheckoutResponse(...)   // CheckoutHandler.cs:207, 211
+new OrderLineDraft(...)     // CheckoutHandler.cs:94
+new ChargeRequest(...)      // CheckoutHandler.cs:134
+new PspResult(...)          // FakePspClient.cs:35, 38
+new NotificationInstruction(...) / new NotificationMessage(...)  // OrderPaidNotificationConsumer.cs:14, 19
+```
+
+**Faz 2'de somut kayıp yok — ölçüldü.** Kaçırılan constructor'ların **tamamı gövdesiz positional
+record**; hiçbiri kod yolu gizlemiyor. Ayrıca gittikleri yer başka bir kenardan zaten görünüyor:
+`new ChargeRequest(...)` Payment modülünü işaret ediyor ama `IPaymentService.ChargeAsync` kenarı
+aynı bilgiyi taşıyor.
+
+**Faz 3'te durum değişebilir.** Entity construction (`new Order(...)` deseni) tablo/kolon
+eşlemesi için önem kazanırsa bu kapatılmalı. Maliyeti düşük (`ExpandInvocationsAsync`'e ikinci
+bir döngü), bedeli gürültü: her DTO/record construction graph'a girer.
+
+**Karar:** Faz 2'de dokümante edildi, Faz 3'te gerçek ihtiyaçla birlikte değerlendirilecek
+*(kullanıcı kararı, 2026-08-07)*.
+
+---
+
+## L10 — `static readonly` alan referansları kenar üretmiyor
+
+**Durum:** Açık. **DÜZELTİLEBİLİR**, düşük öncelik.
+**Keşfedildiği yer:** Faz 2 doğrulaması, §5.1 / §5.2.
+
+Hata sabitleri hem metot hem alan olarak tanımlanabiliyor ve FlowLens yalnız metot olanı görüyor:
+
+```csharp
+// OrderErrors.cs:7  - METOT -> kenar var
+public static Error InvalidStateTransition(OrderStatus from, OrderStatus to) => ...
+// OrderErrors.cs:13 - ALAN  -> kenar yok
+public static readonly Error InvalidCustomerId = Error.Validation(...);
+```
+
+Kaçırılanlar: `OrderErrors.EmptyCart` (CheckoutHandler.cs:60),
+`OrderErrors.DuplicateIdempotencyKey` (:175), `PaymentErrors.PspUnavailable` /
+`.Timeout` (CardPaymentStrategy.cs:45, 50).
+
+**Etkisi düşük:** ilgili sınıflar (`OrderErrors`, `PaymentErrors`) metot çağrıları üzerinden
+graph'ta zaten var. Roadmap'in `CALLS` tanımı da ("A metodu B metodunu çağırıyor") alan okumasını
+kapsamıyor — yani bu bir ihlal değil, kapsam kararı.
+
+---
+
+## L11 — Koleksiyon enjeksiyonu ve decorator zinciri modellenmiyor
+
+**Durum:** Açık. **YAPISAL** (koleksiyon tarafı), decorator tarafı kısmen düzeltilebilir.
+**Keşfedildiği yer:** Faz 2 doğrulaması, §9.
+
+FlowLens interface çağrısını "tüm implementasyonlar" olarak açıyor. İki desende bu **doğru cevabı
+yanlış sebeple** üretiyor:
+
+**Koleksiyon enjeksiyonu.** `NotificationProcessor` kanalları `IEnumerable<INotificationChannel>`
+alıyor (`NotificationProcessor.cs:16`) ve `foreach` ile geziyor (`:38`). DI'da **2 kayıt** var
+(`NotificationModule.cs:32,38`) — her biri `FaultInjectingChannel(EmailNotificationChannel)` ve
+`FaultInjectingChannel(WebhookNotificationChannel)`. FlowLens **3 kardeş implementasyon**
+listeliyor. Üç tip de runtime yolunda olduğu için sonuç doğru — **ama tesadüfen.**
+
+Aynı desen `PaymentService` → `IEnumerable<IPaymentMethodStrategy>` (`PaymentService.cs:23`);
+şu an tek implementasyon olduğu için görünmüyor.
+
+**Decorator zinciri.** `ICartRepository` kaydı yalnız `CachingCartRepository`
+(`CartModule.cs:30` factory); `PostgresCartRepository`'ye onun **içinden** ulaşılıyor. FlowLens
+ikisini kardeş sanıyor. Tip kümesi doğru, sarmalama ilişkisi yanlış. Aynısı `IProductReader`
+(`CatalogModule.cs:59`) ve `IProductQueries` (`CatalogModule.cs:52`) için.
+
+**Neden yapısal:** hangi implementasyonların koleksiyona kaydedildiği, DI kayıt kodunun
+çalıştırılmasını gerektiriyor — L3'ün aynı kökü.
+
+**Faz 5 için kritik:** eval set'i "sonuç doğru mu" ile "doğru mekanizmayla mı" ayrı ayrı ölçmeli.
+Somut kırılganlık: `INotificationChannel` kanallarından biri DI'dan kaldırılırsa FlowLens yine
+üçünü listeler — recall düşmez, precision düşer, test fark etmez.
+
+---
+
+## L12 — Delegate üzerinden yapılan çağrılar metinsel olarak yakalanıyor
+
+**Durum:** Açık. Kabul edilen yaklaşım.
+**Keşfedildiği yer:** Faz 2 doğrulaması, §5.3.
+
+`CardPaymentStrategy.ExecuteAsync` (`CardPaymentStrategy.cs:33-34`), `ChargeOnceAsync`'i Polly'ye
+geçirdiği bir lambda içinde çağırıyor:
+
+```csharp
+var result = await pipeline.ExecuteAsync(
+    async token => await ChargeOnceAsync(request, attempts, token),
+    cancellationToken);
+```
+
+FlowLens bunu **yakaladı**, çünkü metot bildiriminin tüm alt ağacını geziyor ve lambda gövdeleri
+de o ağaçta. Sonuç doğru, **mekanizma yaklaşık**: Polly'nin delegate'i çağırdığı bilinmiyor,
+çağrı metnin içinde görüldüğü için ekleniyor.
+
+İki yan etkisi:
+- Yaratılıp **hiç çağrılmayan** bir lambda da kenar üretir (yanlış pozitif).
+- Delegate başka metoda geçirilip **orada** çağrılırsa kenar yanlış çağırana bağlanır.
+
+Bu vakada ikisi de zararsız. Genel çözümü data-flow analizi gerektirir — roadmap §3'te kapsam
+dışı.
 
 ---
 

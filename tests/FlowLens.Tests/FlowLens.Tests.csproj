@@ -18,6 +18,15 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!--
+    Synthetic-workspace tests compile snippets that use IEndpointRouteBuilder and MapGroup, so the
+    test host needs the ASP.NET Core reference assemblies on its TPA list for SyntheticWorkspace to
+    hand them to Roslyn. No ASP.NET Core code is executed.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <ItemGroup>
     <None Update="appsettings.test.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
