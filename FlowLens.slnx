@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FlowLens.Cli/FlowLens.Cli.csproj" />
+    <Project Path="src/FlowLens.Core/FlowLens.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FlowLens.Tests/FlowLens.Tests.csproj" />
+  </Folder>
+</Solution>
