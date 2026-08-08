@@ -53,14 +53,27 @@ public sealed record CliOptions(
 
     public const string Usage = """
         Usage:
-          flowlens build <solution-path> [-o graph.json]    Build the graph (do this first)
-          flowlens trace "<node>"                           Traverse it: what does this reach?
-          flowlens trace "<node>" --direction backward      ...and what reaches this?
+          THE DATA-LAYER ANSWER - tables and columns. Two steps, and the second is the one
+          Phase 4's GET /trace will call:
 
-          flowlens <solution-path> [scan options]           Phase 1: load, count, SemanticModel demo
-          flowlens endpoints <solution-path>                Phase 2: list discovered endpoints
-          flowlens trace <solution-path> --endpoint "..."   Phase 2: walk one endpoint live,
-                                                            call chain only - no tables or columns
+            flowlens build <solution-path> [-o graph.json]  Build the graph. Do this ONCE.
+            flowlens trace "<node>"                         What does this reach?  -> tables + columns
+            flowlens trace "<node>" --direction backward    What reaches this?     -> entry points
+
+              e.g.  flowlens build C:\src\ModularCommerce\ModularCommerce.sln
+                    flowlens trace "POST /api/ordering/checkout"
+                    flowlens trace "table:ordering.orders" --direction backward
+
+          Everything below is an earlier phase kept for inspection. None of it reports
+          tables or columns.
+
+            flowlens <solution-path> [scan options]         Phase 1: load, count, SemanticModel demo
+            flowlens endpoints <solution-path>              Phase 2: list discovered endpoints
+            flowlens trace <solution-path> --endpoint "..." Phase 2: walk one endpoint LIVE.
+                                                            Call chain only - NO tables, NO columns.
+
+          Both live under the word "trace" and the ARGUMENT decides which runs: a solution path
+          selects the Phase 2 live walk, anything else traverses graph.json.
 
         Scan options:
           --check-compilation   Compile every project and report error counts.

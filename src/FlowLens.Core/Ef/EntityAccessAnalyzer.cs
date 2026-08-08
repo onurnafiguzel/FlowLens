@@ -6,11 +6,19 @@ namespace FlowLens.Core.Ef;
 
 /// <param name="Kind">Always <see cref="EdgeKind.Reads"/> or <see cref="EdgeKind.Writes"/>.</param>
 /// <param name="Evidence">Human-checkable: the expression and its file:line.</param>
+/// <param name="WritesWholeRow">
+/// The statement writes every mapped column of the entity, not only the ones some assignment names.
+/// True for Add/AddRange (an INSERT lists all columns), for Update/UpdateRange (EF marks every
+/// property modified) and for constructing a mapped entity. Column-level writes are otherwise
+/// derived from assignments, which is the right measure for a tracked-entity UPDATE and an
+/// under-count for an INSERT - measured at 15/25 in docs/phase3-validation.md.
+/// </param>
 public sealed record EntityAccess(
     string EntityClrTypeName,
     EdgeKind Kind,
     EdgeMechanism Mechanism,
-    string Evidence);
+    string Evidence,
+    bool WritesWholeRow = false);
 
 /// <param name="RawSqlSites">
 /// Places that reach the database without going through the model. No edge is produced for these -
@@ -51,6 +59,17 @@ public sealed class EntityAccessAnalyzer(EfModelIndex model)
         "Attach", "AttachRange",
         "ExecuteUpdate", "ExecuteUpdateAsync",
         "ExecuteDelete", "ExecuteDeleteAsync",
+    };
+
+    /// <summary>
+    /// The subset of <see cref="WriteMethods"/> that writes every column of the row rather than
+    /// the ones an assignment names: an INSERT lists all columns, and Update marks every property
+    /// modified. Remove/Attach/ExecuteDelete do not, and ExecuteUpdate names its own.
+    /// </summary>
+    private static readonly HashSet<string> WholeRowMethods = new(StringComparer.Ordinal)
+    {
+        "Add", "AddAsync", "AddRange", "AddRangeAsync",
+        "Update", "UpdateRange",
     };
 
     private static readonly HashSet<string> SaveMethods = new(StringComparer.Ordinal)
@@ -117,11 +136,13 @@ public sealed class EntityAccessAnalyzer(EfModelIndex model)
                 continue;
             }
 
+            var wholeRow = WholeRowMethods.Contains(method.Name);
+
             if (TryResolveDbSet(invocation.Expression, semanticModel, cancellationToken) is { } dbSet)
             {
                 consumedByWrite.Add(dbSet.Expression);
                 Record(accesses, dbSet.EntityClrTypeName, EdgeKind.Writes, dbSet.Mechanism,
-                    $"{Text(invocation.Expression)} at {location}");
+                    $"{Text(invocation.Expression)} at {location}", wholeRow);
 
                 CollectSetPropertyColumns(invocation, semanticModel, solutionDirectory, accesses, cancellationToken);
                 continue;
@@ -136,7 +157,7 @@ public sealed class EntityAccessAnalyzer(EfModelIndex model)
                 if (FullName(argumentType) is { } name && model.IsMappedEntity(name))
                 {
                     Record(accesses, name, EdgeKind.Writes, EdgeMechanism.DbSetProperty,
-                        $"{Text(invocation.Expression)} at {location}");
+                        $"{Text(invocation.Expression)} at {location}", wholeRow);
                 }
             }
         }
@@ -228,8 +249,11 @@ public sealed class EntityAccessAnalyzer(EfModelIndex model)
                 continue;
             }
 
+            // Constructing the entity sets the whole row: every column the INSERT will carry gets
+            // its value here, including the ones no assignment in this body names.
             Record(accesses, name, EdgeKind.Writes, EdgeMechanism.EntityConstruction,
-                $"new {ShortName(name)}(...) at {Where(creation, solutionDirectory)}");
+                $"new {ShortName(name)}(...) at {Where(creation, solutionDirectory)}",
+                writesWholeRow: true);
         }
     }
 
@@ -511,14 +535,25 @@ public sealed class EntityAccessAnalyzer(EfModelIndex model)
         string entity,
         EdgeKind kind,
         EdgeMechanism mechanism,
-        string evidence)
+        string evidence,
+        bool writesWholeRow = false)
     {
-        if (accesses.Any(a => a.EntityClrTypeName == entity && a.Kind == kind && a.Mechanism == mechanism))
+        var existing = accesses.FindIndex(a =>
+            a.EntityClrTypeName == entity && a.Kind == kind && a.Mechanism == mechanism);
+
+        if (existing >= 0)
         {
+            // A body can both Remove and Add the same DbSet. Whichever came first must not decide
+            // the flag: if any statement writes the whole row, the method does.
+            if (writesWholeRow && !accesses[existing].WritesWholeRow)
+            {
+                accesses[existing] = accesses[existing] with { WritesWholeRow = true, Evidence = evidence };
+            }
+
             return;
         }
 
-        accesses.Add(new EntityAccess(entity, kind, mechanism, evidence));
+        accesses.Add(new EntityAccess(entity, kind, mechanism, evidence, writesWholeRow));
     }
 
     /// <summary>Strips Task&lt;T&gt;, IEnumerable&lt;T&gt; and nullable wrappers to reach the entity.</summary>

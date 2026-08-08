@@ -194,6 +194,7 @@ public static class EfProbe
         var model = context.Model;
 
         var entities = new List<EfEntity>();
+        var jsonContainers = CollectJsonContainerColumns(model);
 
         foreach (var entityType in model.GetEntityTypes())
         {
@@ -203,6 +204,11 @@ public static class EfProbe
             var storeObject = StoreObjectIdentifier.Create(entityType, StoreObjectType.Table);
 
             CollectProperties(entityType, storeObject, clrType, properties, null, null);
+
+            if (jsonContainers.TryGetValue(FullName(clrType) ?? clrType.Name, out var containers))
+            {
+                properties.AddRange(containers);
+            }
 
             // Every mapped entity is a concrete class, so FullName is present. Falling back to the
             // simple name rather than skipping keeps the entity visible if that ever stops holding -
@@ -220,6 +226,71 @@ public static class EfProbe
             FullName(contextType)!,
             model.GetDefaultSchema(),
             entities);
+    }
+
+    /// <summary>
+    /// The container column of every <c>OwnsMany(...).ToJson()</c> collection, keyed by the OWNER's
+    /// CLR type name.
+    /// <para>
+    /// Needed because such a collection is one column on the owner's table and that column belongs
+    /// to neither side's <c>GetProperties()</c>: the owned type's members are JSON fields, and the
+    /// owner's navigation is a navigation, not a property. So the column simply did not exist in the
+    /// snapshot - measured: <c>cart.carts.Items</c> was absent while <c>record.Items = items</c> was
+    /// analysed and then discarded as "written but not mapped to a column".
+    /// </para>
+    /// <para>
+    /// The synthetic property is named after the NAVIGATION, because that is what C# assigns to and
+    /// therefore the only name an analyzer can match. It is not shadow: <c>CartRecord.Items</c> is a
+    /// real member with a real source location, so the Column node it produces is attributable like
+    /// any other.
+    /// </para>
+    /// </summary>
+    private static Dictionary<string, List<EfProperty>> CollectJsonContainerColumns(IModel model)
+    {
+        var byOwner = new Dictionary<string, List<EfProperty>>(StringComparer.Ordinal);
+
+        foreach (var entityType in model.GetEntityTypes())
+        {
+            if (!entityType.IsMappedToJson()
+                || entityType.FindOwnership() is not { } ownership
+                || ownership.PrincipalToDependent?.Name is not { } navigation
+                || entityType.GetContainerColumnName() is not { Length: > 0 } column)
+            {
+                continue;
+            }
+
+            // Only the outermost JSON type owns a column of the table. A nested one lives inside
+            // that same document, so claiming a second column for it would invent one.
+            var owner = ownership.PrincipalEntityType;
+            if (owner.IsMappedToJson())
+            {
+                continue;
+            }
+
+            var ownerName = FullName(owner.ClrType) ?? owner.ClrType.Name;
+
+            if (!byOwner.TryGetValue(ownerName, out var list))
+            {
+                list = [];
+                byOwner[ownerName] = list;
+            }
+
+            if (list.Any(p => string.Equals(p.Name, navigation, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            list.Add(new EfProperty(
+                Name: navigation,
+                ColumnName: column,
+                JsonPropertyName: null,
+                DeclaringClrTypeName: ownerName,
+                IsShadow: false,
+                IsRowVersion: false,
+                StoreType: null));
+        }
+
+        return byOwner;
     }
 
     /// <summary>

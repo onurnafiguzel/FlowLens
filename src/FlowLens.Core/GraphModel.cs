@@ -23,6 +23,36 @@ public enum NodeKind
     ExternalCall,
 }
 
+/// <summary>
+/// Why a node is an entry point, for the nodes that are one.
+/// <para>
+/// Deliberately NOT new <see cref="NodeKind"/> values. Being a root is a role in the graph, not a
+/// kind of thing: <c>ReservationTtlSweeper.ExecuteAsync</c> is a Method that happens to start a
+/// flow, and the same symbol can be an intermediate node of another flow. Widening NodeKind would
+/// have forced every consumer written against those nine values to change, for information that is
+/// really a second axis.
+/// </para>
+/// <para>
+/// It exists because the backward answer was incomplete without it. "Which flows write
+/// ordering.orders?" returned four endpoints under an Endpoint heading and buried the fifth - a
+/// background sweeper - among eleven Methods. For triage that is a lost suspect.
+/// </para>
+/// </summary>
+public enum RootKind
+{
+    /// <summary>Not an entry point. Written explicitly rather than omitted - see <see cref="NodeKind"/>.</summary>
+    None,
+
+    /// <summary>A mapped HTTP endpoint.</summary>
+    Endpoint,
+
+    /// <summary>An IConsumer&lt;T&gt;.Consume - work a broker starts.</summary>
+    Consumer,
+
+    /// <summary>A hosted service's ExecuteAsync or StartAsync - work a timer or the host starts.</summary>
+    BackgroundService,
+}
+
 public enum EdgeKind
 {
     Calls,
@@ -92,6 +122,23 @@ public enum EdgeMechanism
     /// </summary>
     SaveChangesInterceptor,
 
+    /// <summary>
+    /// A column of a row the statement writes in full, rather than one an assignment named.
+    /// <para>
+    /// Add/AddRange emit an INSERT listing every mapped column; Update marks every property
+    /// modified. Deriving columns from assignments alone therefore under-reports every insert -
+    /// measured at 15 of 25 columns, and it is exactly the columns no C# statement mentions that
+    /// went missing: surrogate keys initialised on a base type, shadow foreign keys, and JSON
+    /// container columns.
+    /// </para>
+    /// <para>
+    /// Kept as its own mechanism rather than folded into the assignment ones because it is a
+    /// weaker claim about a specific column: the row is written, so this column is written with it.
+    /// A column that some assignment also names keeps the more precise edge instead.
+    /// </para>
+    /// </summary>
+    RowInsert,
+
     /// <summary>MAPS_TO, sourced from EF Core's IModel.</summary>
     EfModelMapping,
 
@@ -117,6 +164,12 @@ public enum EdgeMechanism
 /// The rule is structural - the declaring project's module is Shared - not a name heuristic.
 /// </param>
 /// <param name="Depth">Depth of first discovery from whichever root found it.</param>
+/// <param name="RootKind">
+/// Whether this node is an entry point and of which sort. <see cref="FlowLens.Core.RootKind.None"/>
+/// for everything else, written out rather than omitted: a field that disappears at its default
+/// value is how 25 nodes lost their <c>kind</c>, and "absent means not a root" is the same unwritten
+/// rule that produced a confident misreading then.
+/// </param>
 public sealed record Node(
     string Id,
     NodeKind Kind,
@@ -127,7 +180,8 @@ public sealed record Node(
     bool Ambiguous = false,
     bool Truncated = false,
     bool Utility = false,
-    int Depth = 0)
+    int Depth = 0,
+    RootKind RootKind = RootKind.None)
 {
     public string Location => Line > 0 ? $"{FilePath}:{Line}" : FilePath;
 }

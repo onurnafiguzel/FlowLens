@@ -115,9 +115,9 @@ public static class Phase3Commands
         var stats = result.Document.Stats;
 
         Console.WriteLine($"      {result.Roots.Count} roots: " + string.Join(", ", result.Roots
-            .GroupBy(r => r.Kind, StringComparer.Ordinal)
-            .OrderBy(g => g.Key, StringComparer.Ordinal)
-            .Select(g => $"{g.Count()} {g.Key.ToLowerInvariant()}")));
+            .GroupBy(r => r.Kind)
+            .OrderBy(g => g.Key)
+            .Select(g => $"{g.Count()} {Label(g.Key, g.Count())}")));
 
         Console.WriteLine();
         Console.WriteLine("      Nodes by type:");
@@ -214,6 +214,11 @@ public static class Phase3Commands
         Console.WriteLine($"{arrow} {subgraph.Nodes.Count - 1} node(s):");
         Console.WriteLine();
 
+        if (direction == TraversalDirection.Backward)
+        {
+            PrintRoots(subgraph, startId);
+        }
+
         foreach (var group in subgraph.Nodes
             .Where(n => n.Id != startId)
             .GroupBy(n => n.Kind)
@@ -238,6 +243,66 @@ public static class Phase3Commands
 
         PrintDataLayer(subgraph);
     }
+
+    /// <summary>
+    /// The entry points that reach this node, first and grouped by what starts them.
+    /// <para>
+    /// Backward's whole question is "who is affected", so the roots ARE the answer and everything
+    /// else is the path to it. Grouping by <see cref="RootKind"/> rather than by node kind is the
+    /// load-bearing part: ordering.orders is reached by four endpoints and one background sweeper,
+    /// and before this the sweeper sat in a list of eleven Methods with no sign it was an entry
+    /// point at all. An incident triaged off that list would have four suspects instead of five.
+    /// </para>
+    /// </summary>
+    private static void PrintRoots(Subgraph subgraph, string startId)
+    {
+        var roots = subgraph.Nodes
+            .Where(n => n.Id != startId && n.RootKind != RootKind.None)
+            .ToList();
+
+        if (roots.Count == 0)
+        {
+            // Not the same as "nothing reaches it": a table written only by an unreferenced helper
+            // has callers but no entry point, and that is worth saying out loud.
+            Console.WriteLine("  Entry points (0) - nothing reaches this from an endpoint, consumer or background job.");
+            Console.WriteLine();
+            return;
+        }
+
+        var byKind = roots
+            .GroupBy(n => n.RootKind)
+            .OrderBy(g => g.Key)
+            .ToList();
+
+        Console.WriteLine($"  Entry points ({roots.Count}): " + string.Join(" + ", byKind
+            .Select(g => $"{g.Count()} {Label(g.Key, g.Count())}")));
+        Console.WriteLine();
+
+        foreach (var group in byKind)
+        {
+            foreach (var node in group
+                .OrderBy(n => subgraph.DepthById.GetValueOrDefault(n.Id))
+                .ThenBy(n => n.DisplayName, StringComparer.Ordinal))
+            {
+                var depth = subgraph.DepthById.GetValueOrDefault(node.Id);
+                Console.WriteLine(
+                    $"    {Label(group.Key, 1),-18} d{depth,-2} {node.DisplayName,-52} {node.Location}");
+            }
+        }
+
+        Console.WriteLine();
+    }
+
+    private static string Label(RootKind kind, int count) => (kind, count) switch
+    {
+        (RootKind.Endpoint, 1) => "endpoint",
+        (RootKind.Endpoint, _) => "endpoints",
+        (RootKind.Consumer, 1) => "consumer",
+        (RootKind.Consumer, _) => "consumers",
+        (RootKind.BackgroundService, 1) => "background job",
+        (RootKind.BackgroundService, _) => "background jobs",
+        _ => kind.ToString(),
+    };
 
     /// <summary>
     /// The data layer restated on its own, because it is the answer to the question the tool was
