@@ -258,11 +258,65 @@ Kural **yapısal, isim tahmini değil**: node'un bildirildiği projenin modülü
 
 Filtrelemek yerine etiketlemenin gerekçesi: filtreleme geri alınamaz bir bilgi kaybı ve
 *"eksik, fazladan tehlikelidir"* ilkesine ters. Etiket kararı tüketiciye bırakıyor —
-`TraversalQuery.IncludeUtility: false` Faz 4'ün LLM'e göndereceği alt kümeyi küçültür,
+`TraversalQuery.IncludeUtility: false` Faz 4'ün göndereceği alt kümeyi küçültür,
 graph dosyası değişmeden.
 
 Yeni bir `NodeKind` **değil**: `ambiguous`/`truncated` ile aynı kategoride bir attribute,
 ontoloji büyümedi (roadmap §5).
+
+### Faz 4 ölçümü etiketin iki kuralını düzeltti
+
+Faz 4'ün API varsayılanını seçmek için yapılan ölçüm (25 endpoint forward + 16 tablo backward =
+**41 sorgu**, `IncludeUtility` true/false) iki hata buldu. İkisi de Faz 3 boyunca oradaydı ve
+hiçbir test görmedi.
+
+**1. Bir kök yardımcı sayılıyordu.** Kural yapısal — *"bildirildiği projenin modülü Shared ise
+utility"* — ve `Result.Success` için doğru. Ama Shared yalnız gerçek yardımcıları barındırmıyor:
+`MigrateAndSeedHostedService` orada bildirilmiş bir **BackgroundService kökü** ve
+`catalog.products` ile `inventory.stock_items`'ı tohumluyor. Modül kuralı onu plumbing sayıyordu.
+
+> **Yeni invariant:** `RootKind != None ⇒ utility = false`. Kök olmak, tanımı gereği yardımcı
+> olmamak demek; rol, modül kuralını **ezer**. `GraphBuilder` kökleri damgalarken etiketi
+> temizliyor, `GraphJson.Validate` bunu bloke edici olarak kontrol ediyor — Shared'da bildirilen
+> bir sonraki kök aynı hatayı sessizce tekrarlayamaz.
+>
+> Tek node'a istisna koymak yerine invariant tercih edildi: istisna, aynı sınıf hatayı bir
+> sonraki kök için açık bırakırdı.
+
+**2. Daha ağırı: filtre bir ERİŞİLEBİLİRLİK filtresiydi.** `CodeGraph.Walk` utility node'u
+*gezerken atlıyordu* (`if (!IncludeUtility && next.Utility) continue`), yani onun **arkasında
+kalan utility olmayan her şey de** düşüyordu. L8'in kararı ise bunu bir **sunum** filtresi olarak
+tarif ediyor — cevabı inceltmek, erişilebilirliği değiştirmek değil.
+
+Somut kayıp: kökün kendi etiketi düzeltildikten *sonra* bile, ona giden yol
+`IDataSeeder.SeedAsync` üzerinden geçiyor — Shared'da bildirilmiş bir interface metodu, kök değil,
+dolayısıyla utility kalması **doğru**. O tek düğümü atlamak kökü yine kesiyordu.
+
+> **Düzeltme:** yürüyüş her zaman tam graph'ı geziyor, `IncludeUtility` **sonuca** uygulanıyor
+> (`CodeGraph.WithoutUtility`). Bir ucu elenen kenar da düşer — zincirde görünür bir boşluk kalır,
+> uydurma bir bağlantı değil. Başlangıç düğümü hiçbir zaman elenmez.
+
+**Neden hiçbir test görmedi.** Filtre **tek bir tablo veya kolon kaybettirmiyordu** — 41 sorgunun
+hepsinde tablo 48→48, kolon 244→244. Tablo/kolon seviyesinde bakan bir kontrol temiz okuyordu.
+Kaybolan şey **kök**'tü: dört backward cevabında *"bu tabloya kim yazıyor?"* sorusundan bir
+background job sessizce düşüyordu.
+
+| Sorgu | önce | sonra |
+|---|---|---|
+| `catalog.outbox_messages` | 3 | **4** |
+| `catalog.products` | 5 | **6** |
+| `discovery.product_embeddings` | 4 | **5** |
+| `inventory.stock_items` | 6 | **7** |
+
+**Yeni invariant, popülasyonun tamamında:** `ThinningUtilityNodesNeverChangesWhatIsReachable` —
+41 sorgunun her birinde `IncludeUtility` true/false ile dönen **utility olmayan node kümesi**
+birebir aynı olmalı. Tablo/kolon değil, **node kümesi**: dar kontrolün bu bug'ı kaçırmasının sebebi
+tam olarak buydu. Artık garanti yapısal — ölçülen bir 0 değil, imkânsız bir kayıp.
+
+**Ders.** Faz 4 tek satır üretim kodu yazmadan iki hata buldu; ikisini de bulan şey bir test değil,
+**bir varsayılanı seçmek için yapılan ölçümdü**. Faz 2'nin `NotificationProcessor`'ı "tesadüfen
+doğru"ydu; bu ikisi "tesadüfen zararsız"dı — kayıp gerçekti, yalnız kimsenin baktığı sütunda
+görünmüyordu.
 
 > Faz 3 ölçümü, önceki tahmini düzeltiyor: checkout trace'inin 106 node'unun "önemli bir kısmı"
 > denmişti; tüm graph'ta Shared oranı %3,75. `Forward()` tablo/kolon hedefine yürüdüğünde bunlar

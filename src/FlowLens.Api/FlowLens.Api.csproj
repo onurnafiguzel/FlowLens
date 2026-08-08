@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!--
+    Core only. No LLM package, no Roslyn entry point, no MSBuild: this API answers from graph.json
+    and nothing else. `build` takes ~32 seconds of design-time build and must never sit behind an
+    HTTP request - the dependency list is where that rule is enforced rather than merely stated.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\FlowLens.Core\FlowLens.Core.csproj" />
+  </ItemGroup>
+
+</Project>

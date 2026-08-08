@@ -129,11 +129,19 @@ public static class GraphBuilder
         // same way and does not know which ones a root loop started from. Without this the graph
         // records that 32 roots exist but not WHICH nodes they are, so a backward answer cannot
         // tell an endpoint from a background job.
+        //
+        // Clearing Utility here is the load-bearing half. The utility tag is structural - the
+        // declaring project's module is Shared - and that rule is right for Result.Success, but
+        // Shared also declares MigrateAndSeedHostedService, which is a BackgroundService root that
+        // seeds catalog.products and inventory.stock_items. Tagging it utility let a consumer that
+        // thins utility nodes drop an ENTRY POINT: measured, four backward answers lost
+        // "who writes this table?" evidence. A root cannot be plumbing by definition, so the role
+        // overrides the module rule rather than the other way round.
         foreach (var root in roots)
         {
             if (nodes.TryGetValue(root.Id, out var node))
             {
-                nodes[root.Id] = node with { RootKind = root.Kind };
+                nodes[root.Id] = node with { RootKind = root.Kind, Utility = false };
             }
         }
 

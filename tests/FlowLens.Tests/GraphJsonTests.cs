@@ -84,6 +84,103 @@ public sealed class GraphJsonTests
         }
     }
 
+    /// <summary>
+    /// A root cannot be plumbing.
+    /// <para>
+    /// The utility tag is structural - the declaring module is Shared - and Shared holds both real
+    /// helpers and one real entry point: MigrateAndSeedHostedService, a BackgroundService that
+    /// seeds catalog.products and inventory.stock_items. Tagged utility, it disappeared from four
+    /// backward answers for any consumer that thins utility nodes, taking an entry point with it.
+    /// Enforced here rather than left to the builder so the next root declared in Shared cannot
+    /// reintroduce it silently.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void RejectsARootThatIsAlsoMarkedUtility()
+    {
+        var root = new Node(
+            "x", NodeKind.Method, "Seeder.StartAsync", "Shared", "Seeder.cs", 1,
+            Utility: true, RootKind: RootKind.BackgroundService);
+
+        var ex = Assert.Throws<InvalidGraphException>(() => GraphJson.Validate([root], []));
+
+        Assert.Contains("utility", ex.Message, StringComparison.Ordinal);
+        Assert.Contains(nameof(RootKind.BackgroundService), ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>A utility node that is NOT a root stays perfectly legal - that is L8's whole point.</summary>
+    [Fact]
+    public void AcceptsAUtilityNodeThatIsNotARoot() =>
+        GraphJson.Validate(
+            [new Node("x", NodeKind.Method, "Result.Success", "Shared", "Result.cs", 21, Utility: true)],
+            []);
+
+    /// <summary>
+    /// The same graph writes the same bytes, whatever order it arrives in.
+    /// <para>
+    /// Stated as order-independence rather than "two consecutive builds match" because it is the
+    /// stronger claim and the cheaper test: it holds for EVERY input order, not just the two a
+    /// given pair of runs happened to produce - and it needs no 32-second build to check.
+    /// </para>
+    /// <para>
+    /// Measured cause: two builds of unchanged source produced set-identical files in which 8 nodes
+    /// and 40 edges had moved (SymbolFinder promises no order), turning a one-field change into a
+    /// 216-line diff. Phase 3's four real bugs were found by reading that file.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void WritesTheSameBytesWhateverOrderTheGraphArrivesIn()
+    {
+        var nodes = new[] { Node("c", "C.cs", 3), Node("a", "A.cs", 1), Node("b", "B.cs", 2) };
+        var edges = new[]
+        {
+            new Edge("c", "a", EdgeKind.Calls, "third"),
+            new Edge("a", "b", EdgeKind.Writes, "first", Mechanism: EdgeMechanism.RowInsert),
+            new Edge("a", "b", EdgeKind.Writes, "second", Mechanism: EdgeMechanism.DbSetProperty),
+        };
+
+        var forward = WriteToString(new GraphDocument(
+            GraphJson.SchemaVersion, "x.sln", Stats(), nodes, edges, ["z", "a"]));
+
+        var reversed = WriteToString(new GraphDocument(
+            GraphJson.SchemaVersion, "x.sln", Stats(), [.. nodes.Reverse()], [.. edges.Reverse()], ["a", "z"]));
+
+        Assert.Equal(forward, reversed);
+    }
+
+    /// <summary>
+    /// Build duration must not reach the file: an artifact that timestamps its own build can never
+    /// be reproducible, and reproducibility is what keeps the diff readable.
+    /// </summary>
+    [Fact]
+    public void DoesNotWriteBuildDurationIntoTheFile()
+    {
+        var stats = new GraphStats(
+            new Dictionary<string, int>(), new Dictionary<string, int>(),
+            new Dictionary<string, int>(), 0, 0, 0, ElapsedMs: 32_500);
+
+        var json = WriteToString(new GraphDocument(
+            GraphJson.SchemaVersion, "x.sln", stats, [Node("a", "A.cs", 1)], [], []));
+
+        Assert.DoesNotContain("elapsed", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("32500", json, StringComparison.Ordinal);
+    }
+
+    private static string WriteToString(GraphDocument document)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"flowlens-{Guid.NewGuid():N}.json");
+
+        try
+        {
+            GraphJson.Write(path, document);
+            return File.ReadAllText(path);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [Fact]
     public void RoundTripsNodesEdgesAndMechanisms()
     {

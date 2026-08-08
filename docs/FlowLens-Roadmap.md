@@ -2,21 +2,26 @@
 
 > Bu doküman Claude Code'a context olarak verilmek üzere yazıldı.
 > Kod yazmadan önce **"Claude Code için çalışma kuralları"** bölümünü oku.
+> Faz prompt'ları: `docs/FlowLens-ClaudeCode-Prompts.md`
+>
+> **v2 — faz sırası değişti.** LLM katmanı en sona alındı ve izole edildi.
+> Gerekçe Bölüm 4'te.
 
 ---
 
 ## 1. Problem
 
-Büyük ekiplerde iki manuel süreç var:
+Büyük ekiplerde üç manuel süreç var:
 
 1. **İş analisti impact analizi soruyor.** "Ödeme akışına yeni bir provider ekleyeceğiz, hangi tablo/kolon etkilenir?" → bugün bir developer'ın 30 dakikasını alıyor, cevap kişiye göre değişiyor ve eksik kalabiliyor.
 2. **Incident triage.** "İade butonu 500 dönüyor" → loglara bakılıyor, local'de debug ediliyor, hangi katmanın bozulduğu elle bulunuyor.
+3. **Onboarding.** Ekibe yeni katılan biri "sipariş akışı nereden nereye gidiyor" sorusunun cevabını ancak birine sorarak veya günlerce kod okuyarak buluyor. Dokümantasyon varsa da eskimiş.
 
-Her iki sorunun da ortak zemini aynı: **kod tabanındaki akışın makine tarafından okunabilir bir haritası yok.**
+Üçünün ortak zemini aynı: **kod tabanındaki akışın makine tarafından okunabilir bir haritası yok.**
 
 ## 2. Çözüm
 
-Tek bir çekirdek, üç tüketici:
+Tek bir çekirdek, dört tüketici:
 
 ```
 C# solution
@@ -28,273 +33,251 @@ C# solution
     ▼
 graph.json  (tek dosya, source of truth)
     │
-    ├──► Analyst Bot    : "iade akışı hangi tablolara dokunuyor?"  (forward traversal)
-    ├──► Triage Bot     : stack trace → etkilenen akış + son commit'ler (backward traversal)
-    └──► Visualization  : Mermaid diagram (graph.json'ın render'ı, ayrı iş değil)
+    ├──► HTTP API        : /trace, /backward, /endpoints         (Faz 4)
+    ├──► Dokümantasyon   : Mermaid diyagram + modül dokümanları   (Faz 5)
+    ├──► Triage          : stack trace → akış + son commit'ler    (Faz 6)
+    └──► Doğal dil       : "iade akışı neye dokunuyor?"           (Faz 8, opsiyonel)
 ```
 
-### En kritik mimari karar
+## 3. En kritik mimari karar
 
-**LLM kaynak değil, arayüzdür.**
+**Doğruluk deterministik katmanda üretilir. LLM, varsa, sadece arayüzdür.**
 
 | Katman | Sorumluluk | Deterministik mi |
 |---|---|---|
 | Extraction | Roslyn + EF Core metadata | **Evet** — ground truth |
 | Storage | `graph.json` | Evet |
 | Traversal | C# BFS/DFS | Evet |
-| Interface | NL soru → parametre çıkarımı, sonucu özetleme | Hayır (LLM) |
-
-Doğruluk C# kodunda üretilir. LLM yalnızca (a) soruyu parametreye çevirir, (b) sonucu insan diline çevirir. Her cevap `file:line` referansı taşımak zorundadır — analist doğrulayabilmelidir.
+| API | HTTP, graph.json üzerinde | Evet |
+| Dokümantasyon | Mermaid + markdown üretimi | Evet |
+| Triage | stack trace → backward → git log | Evet |
+| Doğal dil arayüzü | soru → parametre, sonuç → cümle | Hayır (LLM) |
 
 **Neden bu ayrım:** impact analizinde %95 doğruluk işe yaramaz. Yanlış kolon = eksik migration = production hatası. LLM'e "kodu oku ve söyle" dedirtmek non-deterministik ve doğrulanamaz bir sistem üretir.
 
-## 3. Kapsam Dışı (bilinçli olarak yapılmayacak)
+## 4. LLM neden en sonda ve neden izole
 
-Bunlar MVP'de **yasak**. Çekirdek bitmeden hiçbiri eklenmeyecek:
+Üç sebep, üçü de bağımsız olarak yeterli:
+
+**Kurumsal gerçek.** Büyük şirketler kaynak kodunu — özellikle çekirdek iş mantığını — harici bir LLM sağlayıcısına göndermek istemiyor. LLM'e bağımlı bir tool bu kurumlarda hiç değerlendirilmeye alınmaz. LLM'siz çalışan bir tool ise doğrudan kurulabilir.
+
+**Öğrenme.** Roslyn, EF Core metadata ve graph modelleme bu projenin öğrenilecek asıl kısmı. LLM katmanı bunların üstünde ince bir kabuk; önce gelirse dikkati dağıtır ve zeminin eksiklerini gizler.
+
+**Ürün değeri.** Faz 4 sonunda analistin sorusu cevaplanıyor, Faz 5 sonunda onboarding dokümantasyonu üretiliyor. İkisi de LLM olmadan. Doğal dil arayüzü konforu artırır, doğruluğa hiçbir şey katmaz.
+
+### İzolasyon kuralı
+
+`FlowLens.Llm` **ayrı bir proje** olacak ve:
+
+- `FlowLens.Core` ona referans **vermeyecek** — bağımlılık yönü tek yönlü
+- Yapılandırmayla kapatılabilecek; kapalıyken diğer her şey çalışacak
+- Kapalıyken build'de LLM SDK'sı yer almayacak
+- Kodun tamamı LLM'e gönderilmeyecek — yalnız kullanıcının sorusu ve C# tarafından hazırlanmış dar bir node listesi
+
+Bu, mülakatta anlatılacak kararların en güçlülerinden biri: *"LLM'i çıkarınca ürünün çalışmaya devam etmesi tesadüf değil, mimari bir gereklilikti."*
+
+## 5. Kapsam Dışı (bilinçli olarak yapılmayacak)
 
 - ❌ Graph database (Neo4j, Gremlin) — `List<Node>` + LINQ yeterli
 - ❌ Vector DB / embedding / RAG — graph traversal semantic search'ten daha doğru
 - ❌ Taint analysis, data flow analysis, points-to analysis
-- ❌ Incremental cache, CI entegrasyonu
 - ❌ Otomatik branch açma / otomatik fix / auto-merge
-- ❌ MCP server, web UI
 - ❌ Multi-repo desteği
+- ❌ Genel amaçlı olma iddiası — ModularCommerce'in konvansiyonlarına bağlı
 
-Hepsi çalışan bir çekirdeğin üstüne sonradan 1-2 günde eklenir. Başta eklenirse çekirdek hiç bitmez.
+**Faz sonrası (çekirdek bittikten sonra değerlendirilir):** MCP server, incremental cache, CI entegrasyonu, web arayüzü, OpenTelemetry karşılaştırması.
 
-## 4. Teknik kısıtlar
+## 6. Teknik kısıtlar
 
 - **Hedef repo:** ModularCommerce (.NET 10, modular monolith, DDD, MassTransit + RabbitMQ Outbox/Inbox, EF Core, PostgreSQL)
 - **FlowLens ayrı bir repodur.** ModularCommerce'in kaynak kodunu okur, ona hiçbir şey eklemez.
-- **Proje tipi:** .NET 10 console app (Faz 1-3), sonra minimal API (Faz 4)
-- **Ana paketler:** `Microsoft.CodeAnalysis.CSharp.Workspaces`, `Microsoft.Build.Locator`
+- **Ana paketler:** `Microsoft.CodeAnalysis.CSharp.Workspaces`, `Microsoft.Build.Locator`, EF Core + Npgsql (hedefinkine eşit sürüm)
 - **Dil:** kod ve yorumlar İngilizce, dokümantasyon Türkçe
 
-## 5. Veri modeli
-
-Node ve edge tipleri **bilinçli olarak az tutulur.** Genişletme isteği gelirse önce sor.
+## 7. Veri modeli
 
 ### Node tipleri
 
 | Tip | Örnek | Kaynak |
 |---|---|---|
-| `Endpoint` | `POST /orders` | Controller action / minimal API mapping |
-| `Handler` | `CreateOrderCommandHandler` | MediatR/Application layer |
-| `Method` | `OrderService.Cancel` | Ara çağrılar |
-| `Repository` | `OrderRepository.Update` | Data access |
+| `Endpoint` | `POST /api/ordering/checkout` | Minimal API lambda |
+| `Handler` | `CheckoutHandler.HandleAsync` | Application layer |
+| `Method` | `Order.MarkPaid` | Ara çağrılar |
+| `Repository` | `OrderRepository.AddAsync` | Data access |
 | `Entity` | `Order` | EF Core entity |
-| `Table` | `orders` | EF Core `IModel` |
-| `Column` | `orders.status` | EF Core `IModel` |
-| `Event` | `OrderCreated` | MassTransit contract |
-| `ExternalCall` | `HttpClient → payment-api` | HttpClient invocation |
+| `Table` | `ordering.orders` | EF Core `IModel` |
+| `Column` | `ordering.orders.Status` | EF Core `IModel` |
+| `Event` | `OrderPaid` | MassTransit contract |
+| `ExternalCall` | `HttpEmbeddingService` | HttpClient invocation |
+
+Ek alan: `RootKind` (`Endpoint` \| `Consumer` \| `BackgroundService` \| null) — kök olmak bir düğüm tipi değil, roldür.
 
 ### Edge tipleri
 
-| Tip | Anlam |
-|---|---|
-| `CALLS` | A metodu B metodunu çağırıyor |
-| `READS` | Entity/tablo okunuyor |
-| `WRITES` | Entity/tablo yazılıyor |
-| `MAPS_TO` | Entity → Table, Property → Column |
-| `PUBLISHES` | MassTransit `Publish<T>()` |
-| `CONSUMES` | `IConsumer<T>` implementasyonu |
+`CALLS` · `READS` · `WRITES` · `MAPS_TO` · `PUBLISHES` · `CONSUMES`
+
+Her veri kenarı `mechanism` ve `evidence` taşır — bir tablonun graph'a **doğru sebeple mi** girdiği kenar bazında cevaplanabilir olmalı.
 
 ### Node şeması
 
 ```jsonc
 {
-  "id": "Modules.Orders.Application.CreateOrderCommandHandler.Handle",
-  "type": "Handler",
-  "displayName": "CreateOrderCommandHandler.Handle",
-  "module": "Orders",
-  "filePath": "src/Modules/Orders/Application/CreateOrderCommandHandler.cs",
-  "line": 42
+  "id": "endpoint:POST /api/ordering/checkout",
+  "kind": "Endpoint",
+  "rootKind": "Endpoint",
+  "displayName": "POST /api/ordering/checkout",
+  "module": "Ordering",
+  "filePath": "src/Modules/Ordering/.../OrderEndpoints.cs",
+  "line": 22,
+  "location": "src/Modules/Ordering/.../OrderEndpoints.cs:22"
 }
 ```
 
-`filePath` + `line` **zorunlu** — attribution bunun üzerine kuruluyor.
+`filePath` + `line` **zorunlu** — attribution bunun üzerine kuruluyor. Varsayılan değerler dahil her alan açıkça serialize edilir.
 
 ---
 
 # Fazlar
 
-Her faz bağımsız olarak çalışır ve test edilebilir. Bir faz bitmeden diğerine geçilmez.
+Her faz bağımsız çalışır ve test edilebilir. Bir faz bitmeden diğerine geçilmez.
 
-## Faz 1 — Roslyn'e ısınma
+## ✅ Faz 1 — Roslyn'e ısınma *(tamamlandı)*
 
-**Amaç:** Roslyn'in nasıl çalıştığını hissetmek. Henüz graph yok.
+Solution 66/66 yükleniyor, `SemanticModel` çalışıyor, 4 bağımsız hata sinyali.
 
-**Yapılacaklar**
-- Console app oluştur, `MSBuildLocator.RegisterDefaults()` ile başlat
-- `MSBuildWorkspace` ile ModularCommerce.sln'i yükle
-- Tüm `MethodDeclarationSyntax`'ları gez, `dosya:satır → metot adı` bas
-- Yüklenemeyen proje varsa `workspace.WorkspaceFailed` event'ini logla
+**Öğrenilen:** `MSBuildLocator.RegisterDefaults()` metodun ilk satırında olması yetmez — MSBuild tiplerine dokunan kod ayrı bir sınıfta, `[MethodImpl(NoInlining)]` ile olmalı. JIT, metot gövdesindeki tipleri metoda girerken resolve eder.
 
-**Öğrenilecek iki kavram**
-- `SyntaxTree` — kodun ağaç hali, isimler sadece metin
-- `SemanticModel` — o ağaçtaki isimlerin hangi sembole bağlandığı
+**MSBL001:** `Microsoft.Build.Framework`'ün iki kopyası locator'ın resolver'ını devre dışı bırakıyor — locator'ın engellemek için var olduğu hata, kendi paket zincirinden geliyor.
 
-**Kabul kriteri**
-- Solution hatasız yükleniyor, metot sayısı konsola basılıyor
-- Modül başına metot sayısı raporlanıyor
+## ✅ Faz 2 — Call chain *(tamamlandı)*
 
-**Bilinen tuzak:** `MSBuildLocator.RegisterDefaults()` **ilk satırda**, herhangi bir Roslyn tipine dokunmadan önce çağrılmalı. Aksi halde assembly load hatası alınır.
+25 endpoint Minimal API lambda'larından çıkarılıyor, çağrı zinciri recursive takip ediliyor, `OrderPaid` köprüsüyle `Ordering → Notification` geçişi kuruluyor.
 
----
+**Öğrenilen:** Sembol kimliği **compilation başına**, solution başına değil. `OrderPaid` iki compilation'da farklı `ITypeSymbol`; `SymbolEqualityComparer` eşit görmüyor. Projeler arası eşleme yapan her sözlük tam nitelikli isim kullanmalı. Bu bug, modüller arası tek köprüyü sessizce hiç kurmuyordu.
 
-## Faz 2 — Tek endpoint'in call chain'i
+**Ambiguous politikası:** tüm implementasyonlar eklenir, `ambiguous: true` işaretlenir. Ölçüldü: dekoratör ve koleksiyon enjeksiyonunda "tümü" doğru cevap; yalnız config anahtarıyla seçilenlerde aşırı-yaklaşım. Politika yanlış değil — üç farklı DI şeklini tek etiketle göstermek yanlış.
 
-**Amaç:** Bir endpoint'ten başlayıp çağrı zincirini recursive çıkarmak. Hâlâ JSON yok, konsol çıktısı yeterli.
+## ✅ Faz 3 — Graph + tablo/kolon *(tamamlandı)*
 
-**Yapılacaklar**
-- Bir entry point seç (ör. `POST /orders`)
-- Her method body'de `InvocationExpressionSyntax`'ları bul
-- `semanticModel.GetSymbolInfo(invocation).Symbol` ile hedef metodu çöz
-- Recursive takip et, `HashSet` ile cycle koruması koy, max depth parametresi ekle
-- `Publish<T>()` görünce generic type argument'ı yakala → event adı
-- Karşılık gelen `IConsumer<T>` implementasyonunu `SymbolFinder.FindImplementationsAsync` ile bul → **modüller arası köprü**
+`graph.json`: 400 node, 841 kenar, 8 DbContext, 16 tablo, 97 kolon.
 
-**Interface problemi**
-DI yoğun kodda `IOrderRepository.Update` çağrısı interface'e çözülür, concrete tipe değil. MVP çözümü: `SymbolFinder.FindImplementationsAsync` ile tüm implementasyonları bul, birden fazlaysa hepsini ekle ve node'u `"ambiguous": true` işaretle. Bu bilinçli bir trade-off, dokümante et.
+| Ölçüm | Sonuç |
+|---|---|
+| Tablo recall (EF içi) | %90 |
+| Tablo recall (EF dışı / raw SQL) | **%0** |
+| Kolon recall | %83 |
+| Precision (tablo ve kolon) | **%100** |
+| Backward traversal | %100 |
 
-**Kabul kriteri**
-- Seçilen endpoint için Endpoint → Handler → Service → Repository zinciri konsola basılıyor
-- Publish edilen event ve onu consume eden handler zincire dahil
-- Sonsuz döngüye girmiyor
+**Öğrenilen:** 110 test yeşilken graph üç yerde sessiz yanlış cevap veriyordu (`kind` alanı varsayılanlarda yazılmıyor, Column→Table kenarı yok, outbox erişilemez, orphan endpoint'ler). Testlerin bulamadığını `graph.json`'ı elle okumak buldu. **Faz 7'nin varlık sebebi bu.**
+
+**Kayıp sessiz değil:** raw SQL noktaları diagnostics'te `file:line` ile duruyor. Graph "dokunmuyor" demiyor, "bakamadım" diyor.
+
+Açık kalan maddeler: F2 (Redis/ExternalCall ontolojisi), F4 (owned navigasyon okuması), F5 (outbox kolonları), F6 (raw SQL — yapısal), F9, F10.
 
 ---
 
-## Faz 3 — Graph + tablo/kolon eşlemesi
+## Faz 4 — Deterministik API (LLM YOK)
 
-**Amaç:** Çıktıyı yapılandırmak ve veritabanı katmanını bağlamak. **Bu faz bitince projenin asıl değeri hazır** — LLM olmadan bile soru cevaplanabiliyor.
+**Amaç:** analistin `dotnet run` çalıştırmak zorunda kalmaması. Faz 3 zaten soruyu %100 precision ile cevaplıyor; eksik olan tek şey erişilebilirlik.
 
-**Yapılacaklar**
-
-1. Faz 2 çıktısını `Node` / `Edge` modeline dönüştür, `graph.json` olarak yaz
-2. EF Core metadata'sını bağla:
-
-```csharp
-var entity = dbContext.Model.FindEntityType(typeof(Order));
-var table  = entity.GetTableName();
-var column = entity.FindProperty(nameof(Order.Status))!.GetColumnName();
-```
-
-> **Not:** Tablo/kolon eşlemesini SQL parse ederek veya isim tahmin ederek yapma. `IModel` kesin bilgiyi veriyor. DbContext'i design-time factory ile örnekle, veritabanına bağlanma gerekmiyor.
-
-3. Repository metodunda hangi entity'ye dokunulduğunu Roslyn'den çıkar (`DbSet<T>` erişimi, `Update/Add/Remove` çağrıları) → `WRITES` edge'i
-4. Kolon seviyesi için: metot içinde set edilen property'leri yakala, `MAPS_TO` ile kolona bağla
-5. Traversal API'si yaz:
-
-```csharp
-// forward reachability
-IReadOnlyList<Node> Forward(string startId, int maxDepth);
-// backward reachability  
-IReadOnlyList<Node> Backward(string startId, int maxDepth);
-```
-
-Basit BFS. Graph database gerekmiyor — birkaç bin node'da `List` + LINQ milisaniyeler içinde döner.
-
-**Kabul kriteri**
-- `graph.json` üretiliyor, her node'da `filePath` + `line` var
-- `Forward("POST /orders")` çağrısı etkilenen tabloları ve kolonları döndürüyor
-- Çıktı elle doğrulandı: en az 3 endpoint için sonuçlar gerçek kodla karşılaştırıldı
-
----
-
-## Faz 4 — Analyst Bot
-
-**Amaç:** Analistin doğal dille soru sorabilmesi.
-
-**Akış — LLM'e graph verilmiyor:**
+**Performans kuralı:** `build` ~25s sürüyor (66 proje design-time build). Bu, API'nin arkasında **asla** çalışmayacak. API sadece `graph.json` okur; bir istek < 2 saniye.
 
 ```
-1. Soru → LLM #1 → { "target": "refund", "direction": "forward" }   [structured output]
-2. target → graph'ta fuzzy match → node id                          [C# kodu]
-3. Forward(nodeId, depth) → 10-30 node'luk alt küme                 [C# kodu]
-4. Alt küme → LLM #2 → analiste anlatılmış cevap + citations        [structured output]
+GET  /endpoints          25 endpoint: route, method, modül, konum
+GET  /trace?node=...     forward — tablolar, kolonlar, R/W, event köprüleri
+GET  /backward?node=...  backward — RootKind'a göre gruplu kökler
+GET  /tables             16 tablo, şema ve modül ile
+GET  /graph/stats        node/edge sayıları, diagnostics, üretim zamanı
 ```
 
-**Yapılacaklar**
-- Minimal API: `POST /ask { "question": "..." }`
-- LLM #1: soru → hedef akış adı + yön. JSON schema ile constrained output, parse hatası olursa retry
-- Fuzzy matching: endpoint adı, handler adı, modül adı üzerinden (Levenshtein veya basit contains yeterli)
-- LLM #2: node listesi → Türkçe özet. **System prompt'ta zorunlu kural:** her iddia `dosya:satır` referansı taşır, graph'ta olmayan hiçbir şey söylenmez
-- Eşleşme bulunamazsa "bulamadım, şunları kastetmiş olabilirsin" döndür — uydurma yok
+**Kabul kriteri:** beşi de çalışıyor, hiçbiri solution yüklemiyor, her response'ta `dosya:satır` ve `limitations` alanı var, graph yoksa açık hata (sessiz boş liste yok).
 
-**Kabul kriteri**
-- "İade akışı hangi tablolara dokunuyor?" sorusu doğru tabloları döndürüyor
-- Her cevapta dosya referansı var
-- Var olmayan bir akış sorulduğunda dürüstçe bilmediğini söylüyor
+> **Durak noktası.** Burada kullanılabilir bir ürün var. Devam etmeden değerlendir.
+
+## Faz 5 — Dokümantasyon & görselleştirme
+
+**Amaç:** ekibe yeni katılan birinin "bu akış nereden nereye gidiyor" sorusunu, kimseye sormadan ve eskimeyen bir kaynaktan cevaplayabilmesi. Bu, projenin en geniş kitleye hitap eden çıktısı.
+
+- **Mermaid diyagram üretimi** — endpoint başına akış şeması: Endpoint → Handler → Repository → Table, event köprüleri ayrı kenar tipiyle
+- **Modül dokümantasyonu** — modül başına markdown: hangi endpoint'ler, hangi tablolar, hangi event'ler publish/consume ediliyor, hangi modüllere bağımlı
+- **Modül bağımlılık grafiği** — hangi modül hangisine dokunuyor; mimari ihlaller burada görünür
+- **Living documentation** — `flowlens docs -o docs/` her commit'te yeniden üretilebilir, elle bakım gerektirmez
+
+**Kabul kriteri:** üretilen Mermaid GitHub'da render oluyor, her diyagram `dosya:satır` referansı taşıyor, çıktı `graph.json`'dan deterministik olarak üretiliyor (elle düzenleme yok).
+
+**Neden burada:** Faz 4'ün API'si var, veri hazır, ve bu çıktı hem onboarding hem de blog/mülakat için en gösterilebilir artefakt.
+
+## Faz 6 — Triage Bot (deterministik)
+
+**Amaç:** incident'ta "nereye bakacağım" sorusunu otomatikleştirmek. Yeni sistem değil — Faz 4'ün backward traversal'ının farklı bir girdiyle kullanımı.
+
+1. Input: stack trace (veya exception type + method name)
+2. Proje-içi en üstteki frame'i bul, graph'ta eşleştir
+3. `Backward(symbolId)` → hangi endpoint / consumer / background job'dan ulaşılıyor
+4. `git log --oneline -5 -- <filePath>` → ilgili dosyalardaki son değişiklikler
+5. Çıktı: **incident report** — etkilenen akışlar, tablolar, son commit'ler, muhtemel şüpheliler
+
+**SINIR — yapılmayacak:** otomatik branch açma, otomatik fix, herhangi bir git write işlemi. Çıktı bir rapordur, bot bir developer değildir. Gerekçe `docs/design-decisions.md`'ye yazılacak: alert storm'da loop riski, log'lardaki PII, review edilmemiş patch'in yarattığı sahte güven.
+
+## Faz 7 — Eval set
+
+**Bu adım opsiyonel değil.** Faz 3, 110 test yeşilken üç sessiz yanlış cevap üretildiğini gösterdi. Testler kodun çalıştığını doğrular; eval set **cevabın doğru olduğunu** doğrular.
+
+- `evals/questions.json` — 20 soru, doğru cevaplar ModularCommerce kaynak kodundan **elle** çıkarılır, FlowLens çıktısına bakmadan
+- Soru dağılımı: 12 kolay/orta akış, 4 event üzerinden modül geçen akış, 4 zor vaka (interface ambiguity, raw SQL, dinamik çağrı)
+- **En az bir EF dışı modül (Discovery) örneklemde olmalı** — Faz 3'te bu atlandığı için iki kategori hiç ölçülmedi
+- Metrikler: recall (öncelikli) ve precision, tablo ve kolon seviyesi ayrı, **EF içi ve EF dışı ayrı raporlanır** — tek bir ortalama, aracın nerede kör olduğunu gizler
+- Başarısızlıklar kategorize edilir: reflection, dynamic dispatch, raw SQL, interface ambiguity, diğer
+- **Meta-test:** eval set F1–F10'un her birini görünür kılmalı; kılmıyorsa eval set yanlıştır
+
+Recall %100 çıkarsa şüphelen — eval set çok kolay demektir.
+
+## Faz 8 — Doğal dil arayüzü (opsiyonel, izole)
+
+**Amaç:** analistin endpoint adını bilmek zorunda olmaması. Doğruluğa hiçbir şey katmaz; konfor ve projenin tezinin kanıtı.
+
+```
+1. Soru → LLM #1 → { "target": "...", "direction": "forward|backward" }
+2. target → graph'ta fuzzy match → node id            [C# kodu]
+3. Faz 4'ün Forward/Backward'ını çağır                [C# kodu]
+4. Sonuç → LLM #2 → analiste yazılmış cevap + citations
+```
+
+**İzolasyon (Bölüm 4'teki kural):** `FlowLens.Llm` ayrı proje, `FlowLens.Core` ona referans vermez, yapılandırmayla kapatılabilir, kapalıyken her şey çalışır.
+
+**Kurallar:** LLM'e `graph.json`'ın tamamı verilmez. Her iddia `dosya:satır` taşır. Graph'ta olmayan hiçbir şey söylenmez. Eşleşme bulunamazsa uydurulmaz. API key user secrets'tan okunur.
 
 ---
 
-## Faz 5 — Triage Bot + Eval
+## Faz sonrası (şimdi değil)
 
-**Amaç:** İkinci tüketici ve projenin kanıtı.
-
-### 5a — Triage Bot (1 gün)
-
-Yeni sistem değil, **aynı graph'ın ters yönü.**
-
-- Input: stack trace (veya exception type + method name)
-- Stack trace'teki en üstteki proje-içi symbol'ü bul
-- `Backward(symbolId)` → bu metoda hangi endpoint'lerden ulaşılıyor
-- `git log -- <filePath>` ile ilgili dosyalardaki son commit'leri çek
-- Output: **incident report** — etkilenen akışlar, dosyalar, son değişiklikler, muhtemel şüpheliler
-
-**Sınır:** otomatik branch açma ve fix yazma yok. Çıktı bir rapordur, bot bir developer değildir. Nedenini dokümante et: alert storm'da loop riski, log'lardaki PII'nin LLM'e gitmesi, review edilmemiş patch'in yarattığı sahte güven.
-
-### 5b — Eval set (aynı hafta)
-
-**Bu adım opsiyonel değil.** Bu olmadan "çalışıyor" iddiası doğrulanamaz.
-
-- 20 soru yaz, doğru cevapları **elle** belirle (hangi tablolar, hangi kolonlar)
-- Tool'u çalıştır, karşılaştır
-- İki metrik ölç:
-  - **Recall** — kaçırılan tablo oranı (kritik: eksik kolon, fazla kolondan tehlikeli)
-  - **Precision** — yanlış eklenen tablo oranı
-- Kaçırılanları **kategorize et**: reflection, dynamic dispatch, string-based SQL, ambiguous interface
-
-**Kabul kriteri**
-- `evals/` klasöründe soru-cevap seti ve sonuç raporu var
-- Başarısızlıklar kategorize edilmiş ve nedenleri yazılmış
+MCP server · incremental update (`git diff` ile subgraph yenileme) · CI entegrasyonu (PR'da otomatik impact comment) · web arayüzü · OpenTelemetry karşılaştırması (runtime trace ile static graph eşleştirme, reflection kayıplarını yakalama).
 
 ---
 
-## 6. Faz sonrası (şimdi değil)
+## Claude Code için çalışma kuralları
 
-Çekirdek bitince, her biri 1-2 gün:
-
-- **Mermaid export** — `graph.json` → diagram, ~20 satır
-- **MCP server** — tool'u Claude Code / Cursor'dan çağrılabilir hale getirir
-- **Incremental update** — `git diff` ile sadece değişen subgraph'ı yenile (content-hash cache)
-- **CI entegrasyonu** — PR'da otomatik impact comment
-- **OpenTelemetry karşılaştırması** — runtime trace ile static graph'i eşleştir, reflection kaynaklı kayıpları yakala
-
----
-
-## 7. Claude Code için çalışma kuralları
-
-1. **Önce keşif, sonra plan, sonra kod.** Her fazın başında ilgili kodu oku ve bir plan sun; onay almadan implementation'a başlama.
+1. **Önce keşif, sonra plan, sonra kod.** Plan mode kullanılıyorsa plan onaylanana kadar kaynak kod değişmez.
 2. **Faz atlama.** Faz N'in kabul kriterleri karşılanmadan Faz N+1'e geçme.
-3. **Kapsam dışı listesine uy.** Bölüm 3'teki hiçbir teknoloji önerilmeyecek ve eklenmeyecek. Gerekli olduğunu düşünüyorsan önce gerekçesini yaz ve sor.
-4. **Küçük commit'ler.** Her mantıksal adım ayrı commit, açıklayıcı mesajla.
-5. **Emin olmadığında sor.** Özellikle ModularCommerce'in klasör yapısı, endpoint tanımlama şekli (controller mı minimal API mı), MediatR kullanımı ve DbContext yapılandırması konusunda tahmin yürütme — kodu oku veya sor.
-6. **Test.** Her faz için en az bir integration test: bilinen bir endpoint'in bilinen bir çıktıyı ürettiğini doğrulayan.
-7. **Doğruluk LLM'de değil kodda.** LLM çağrısı eklerken kendine sor: bu bilgi deterministik olarak üretilebilir mi? Üretilebiliyorsa LLM kullanma.
+3. **Kapsam dışı listesine uy.** Bölüm 5'teki hiçbir teknoloji önerilmeyecek. Gerekli olduğunu düşünüyorsan önce gerekçeni yaz ve sor.
+4. **Faz 8'e kadar LLM yok.** Faz 4-7'de LLM çağrısı öneren bir plan reddedilir.
+5. **Küçük commit'ler**, açıklayıcı mesajla.
+6. **Emin olmadığında sor.** ModularCommerce'in yapısı hakkında tahmin yürütme — kodu oku veya sor.
+7. **Sabit sayı hardcode etme.** Ölçülen değerler dokümana yazılır, teste değil.
+8. **Sessiz kayıp yasak.** Elenen, çözülemeyen veya atlanan her şey diagnostics'e `file:line` ile yazılır. Graph "dokunmuyor" ile "bakamadım"ı ayırt etmelidir.
+9. **Doğruluk LLM'de değil kodda.** Bir bilgi deterministik olarak üretilebiliyorsa LLM kullanma.
 
 ---
 
-## 8. Kazanım özeti
-
-Bu proje bittiğinde elde edilenler:
+## Kazanım özeti
 
 | Alan | Kazanım |
 |---|---|
-| Compiler / static analysis | Roslyn ile AST + semantic model üzerinde çalışma, call graph construction |
-| Veri modelleme | EF Core `IModel` metadata API'si, entity-table-column eşlemesi |
-| Graph | Node/edge ontology tasarımı, BFS traversal, forward/backward reachability |
-| AI engineering | Structured output, constrained decoding, grounding & citation, LLM'i doğruluk kaynağı yapmama disiplini |
-| Değerlendirme | Eval set tasarımı, precision/recall, hata kategorizasyonu |
-| Mimari yargı | Kapsam sınırlama, over-engineering'den kaçınma, otomasyonun nerede durması gerektiği |
+| Compiler / static analysis | Roslyn AST + semantic model, call graph construction, symbol resolution sınırları |
+| Veri modelleme | EF Core `IModel` metadata API'si, entity-table-column eşlemesi, satır düzeyi INSERT semantiği |
+| Graph | Node/edge ontology tasarımı, kenar yönünün semantik sonucu, BFS forward/backward |
+| Dokümantasyon üretimi | Diagrams as code, living documentation, C4 benzeri katmanlı görünüm |
+| Değerlendirme | Eval set tasarımı, recall/precision ayrımı, hata kategorizasyonu, "doğru sebeple mi doğru" |
+| Mimari yargı | Kapsam sınırlama, LLM izolasyonu, otomasyonun nerede durması gerektiği |
 | Domain | Change Impact Analysis, program slicing, incident triage — endüstride adı olan problemler |

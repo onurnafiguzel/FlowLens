@@ -17,15 +17,6 @@ public enum CliCommand
     Build,
 }
 
-public enum TraversalDirection
-{
-    /// <summary>What this node reaches - the impact-analysis question.</summary>
-    Forward,
-
-    /// <summary>What reaches this node - the triage question.</summary>
-    Backward,
-}
-
 /// <param name="SolutionPath">Empty when tracing over a graph file, which needs no solution.</param>
 /// <param name="GraphPath">Output path for build; input path for a graph-backed trace.</param>
 public sealed record CliOptions(

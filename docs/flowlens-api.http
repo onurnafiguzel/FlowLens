@@ -1,0 +1,71 @@
+### FlowLens API — Faz 4
+###
+### Calistir (repo kokunden, parametresiz):
+###   dotnet run --project src/FlowLens.Api -c Release
+###
+### graph.json su sirayla aranir: (a) --FlowLens:GraphPath ile verilen yol, (b) calisma dizini,
+### (c) AppContext.BaseDirectory'den yukari dogru, FlowLens.slnx/.git gorulunce dur.
+### (c) gerekli cunku `dotnet run --project` calisma dizinini PROJE klasorune alir.
+###
+### Baska bir grafigi hedeflemek icin:
+###   dotnet run --project src/FlowLens.Api -c Release -- --FlowLens:GraphPath=<yol>\graph.json
+###
+### Hangi dosyanin okundugu /graph/stats -> graphFilePath alaninda gorunur.
+###
+### Node id'leri bosluk, /, :, {} ve <> tasiyor; hepsi query string'de yuzde kodlamasiyla gecer.
+### Path segmenti kullanilmiyor: Kestrel path icindeki %2F'yi varsayilan olarak reddeder.
+
+@host = http://localhost:5100
+
+### 1 — Endpoint listesi (opsiyonel modul filtresi)
+GET {{host}}/endpoints?module=Ordering
+
+### 2 — Forward: bu endpoint neye dokunuyor  (tablolar + kolonlar + R/W)
+GET {{host}}/trace?node=POST%20%2Fapi%2Fordering%2Fcheckout
+
+### 3 — Backward: bu tabloya kim dokunuyor  (kokler, RootKind'a gore gruplu)
+GET {{host}}/backward?node=table%3Aordering.orders
+
+### 4 — Tablo katalogu (erisim TUM graph uzerinden)
+GET {{host}}/tables
+
+### 5 — Graph durumu, diagnostics ve duran sinirlar
+GET {{host}}/graph/stats
+
+
+### --- Parametreler ---
+
+### Utility node'lari goster (varsayilan gizli; her cevap kac tane gizledigini yazar)
+GET {{host}}/trace?node=POST%20%2Fapi%2Fordering%2Fcheckout&includeUtility=true
+
+### Sig derinlik -> truncated: true + "truncated" limitation'i
+GET {{host}}/trace?node=POST%20%2Fapi%2Fordering%2Fcheckout&maxDepth=2
+
+### Route yerine node id de kabul
+GET {{host}}/trace?node=endpoint%3APOST%20%2Fapi%2Fordering%2Fcheckout
+
+### Bir kolona kim yaziyor
+GET {{host}}/backward?node=column%3Aordering.orders.Status
+
+
+### --- Hata yollari ---
+
+### 400: aralik disi derinlik. Sessizce kirpilmaz - istenen deger, sinir ve olculen
+### en uzun zincir birlikte doner.
+GET {{host}}/trace?node=POST%20%2Fapi%2Fordering%2Fcheckout&maxDepth=51
+
+### 404: eslesmeyen node -> bos liste degil, "didYouMean" onerileri
+GET {{host}}/trace?node=POST%20%2Fapi%2Fordering%2Fchekout
+
+### 503: graph yoksa/bozuksa. Govde dosya yolunu, sebebi ve tam komutu tasir.
+### /graph/stats bu durumda da 200 doner ve status: "unavailable" der.
+GET {{host}}/endpoints
+
+
+### --- curl karsiliklari ---
+###
+### curl "http://localhost:5100/endpoints?module=Ordering"
+### curl "http://localhost:5100/trace?node=POST%20%2Fapi%2Fordering%2Fcheckout"
+### curl "http://localhost:5100/backward?node=table%3Aordering.orders"
+### curl "http://localhost:5100/tables"
+### curl "http://localhost:5100/graph/stats"

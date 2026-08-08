@@ -1,4 +1,5 @@
 using FlowLens.Cli;
+using FlowLens.Core;
 
 namespace FlowLens.Tests;
 

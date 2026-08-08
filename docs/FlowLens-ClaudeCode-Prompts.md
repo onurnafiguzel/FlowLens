@@ -25,10 +25,17 @@ Plan mode'da plan hazır olunca üç seçenek sunulur; **"No, keep planning"** i
 - [x] Faz 0 — Kurulum ve keşif
 - [x] Faz 1 — Roslyn'e ısınma
 - [x] Faz 2 — Call chain
-- [ ] Faz 3 — Graph + tablo/kolon
-- [ ] Faz 4 — Analyst Bot
-- [ ] Faz 5a — Triage Bot
-- [ ] Faz 5b — Eval set
+- [x] Faz 3 — Graph + tablo/kolon
+- [ ] Faz 4 — Deterministik API (LLM yok) ← *durak noktası: burada kullanılabilir bir ürün var*
+- [ ] Faz 5 — Dokümantasyon & görselleştirme (LLM yok)
+- [ ] Faz 6 — Triage Bot (LLM yok)
+- [ ] Faz 7 — Eval set (LLM yok)
+- [ ] Faz 8 — Doğal dil arayüzü *(opsiyonel, izole proje)*
+- [ ] *Faz sonrası:* MCP server · incremental cache · CI entegrasyonu · web arayüzü
+
+> **Faz 4-7'de LLM yok.** Kurumlar kaynak kodunu harici LLM'e göndermek
+> istemiyor; LLM'siz çalışan bir tool doğrudan kurulabilir. Gerekçenin
+> tamamı roadmap Bölüm 4'te.
 
 ---
 
@@ -416,141 +423,354 @@ ve düzeltilebilir mi, yoksa yapısal bir sınır mı olduğunu belirt.
 
 ---
 
-## Faz 4 — Analyst Bot
+## Faz 4 — Deterministik API (LLM YOK)
+
+> **Neden bu faz:** Faz 3 zaten analistin sorusunu %100 precision ile
+> cevaplıyor; eksik olan tek şey analistin `dotnet run` çalıştırmak
+> zorunda olması. Eksik olan tek şey, analistin
+> `dotnet run` çalıştırmak zorunda olması. Bu faz onu çözer ve sonunda
+> **kullanılabilir bir ürün** çıkar. Faz 5-7 bunun üstüne biner; doğal dil
+> katmanı (Faz 8) en sonda ve opsiyonel.
+>
+> **Performans notu:** `build` ~25s sürüyor (66 proje design-time build).
+> Bu API'nin arkasında ASLA çalışmayacak. API sadece `graph.json` okur,
+> traversal ~1,5s. Graph üretimi CI'da veya elle, günde bir kez.
 
 ### [KEŞİF]
 
 ```
 @docs/FlowLens-Roadmap.md — Faz 4'ü oku.
+@docs/phase-3-summary.md, @docs/phase3-validation.md ve
+@docs/known-limitations.md dosyalarını da oku.
+
+Bu fazda LLM YOK. Sadece graph.json üzerinde çalışan bir HTTP API.
 
 Kod yazmadan planını sun:
 
-1. Minimal API yapısı: endpoint'ler, request/response modelleri
-2. LLM #1 (soru → parametre): prompt taslağını yaz, JSON schema'yı tanımla.
-   Parse hatası veya schema uyumsuzluğunda ne olacak?
-3. Fuzzy matching: LLM'in döndürdüğü hedef adını graph'taki node'larla
-   eşleştirme stratejin ne? Birden fazla yakın eşleşme varsa?
-4. LLM #2 (sonuç → cevap): prompt taslağını yaz. Her iddianın dosya:satır
-   referansı taşımasını nasıl garanti edeceksin? Graph'ta olmayan bir şey
-   söylemesini nasıl engelleyeceksin?
-5. Hiç eşleşme bulunamazsa akış ne olacak?
-6. Resilience: LLM çağrısı için timeout, retry, circuit breaker — hangisi
-   gerekli, nasıl uygulayacaksın?
+--- API yüzeyi ---
 
-KRİTİK KURAL: LLM'e graph.json'ın tamamını verme. LLM sadece (a) soruyu
-parametreye çevirir, (b) C# tarafından hazırlanmış dar bir node listesini
-özetler. Doğruluk C# kodunda üretilir.
+  GET  /endpoints            25 endpoint: route, HTTP method, modül, konum
+                             Opsiyonel ?module= filtresi
+  GET  /trace?node=...       forward traversal
+                             Tablolar, kolonlar, R/W ayrımı, event köprüleri
+  GET  /backward?node=...    bu node'a ne ulaşıyor
+                             RootKind'a göre gruplu (endpoint / consumer /
+                             background job)
+  GET  /tables               16 tablo, şema ve modül ile
+  GET  /graph/stats          node/edge sayıları, diagnostics özeti, graph
+                             ne zaman üretildi
 
-Planı onaylamamı bekle.
-```
+1. Request/response modelleri ne olacak? /trace ve /backward ortak bir
+   response tipi paylaşsın mı? Faz 5'in doküman üreteci ve Faz 8'in /ask'ı
+   bu tipleri kullanacak.
 
-### [UYGULAMA]
+2. graph.json ne zaman yüklenecek — startup'ta bir kez mi, her istekte mi?
+   Dosya değişirse fark edilecek mi (file watcher)? Bellekte kaç MB tutuyor?
 
-```
-Planı uygula.
+3. Graph yoksa veya bozuksa API nasıl davranacak? Startup'ta fail mi etsin,
+   yoksa 503 ile açık bir mesaj mı dönsün?
 
-Faz 4 kabul kriterleri:
-- POST /ask { "question": "..." } çalışıyor
-- Response'ta: özet metin + etkilenen tablolar/kolonlar listesi + her madde
-  için dosya:satır referansı + traverse edilen node sayısı
-- LLM #1 çıktısı structured output ile validate ediliyor, invalid ise retry
-- Eşleşme bulunamayınca uydurmuyor, "bulamadım" + öneri listesi dönüyor
-- API key configuration'dan okunuyor, kodda hardcode YOK
-- LLM çağrılarında timeout ve retry var
+4. Node id'leri URL'de nasıl taşınacak? "POST /api/ordering/checkout" ve
+   "table:ordering.orders" ikisi de node id — encoding stratejin ne?
 
-Test:
-- LLM'i mock'layarak traversal ve response birleştirme mantığını test et
-- Eşleşme bulunamama senaryosunu test et
+--- Faz 3'ten gelen girdiler ---
 
-Bitince şu soruyu gerçek sistemde dene ve çıktıyı göster:
-"İade akışı hangi tablolara ve kolonlara dokunuyor?"
+A) BİLİNEN SINIRLAR CEVABA YANSIMALI. Ölçülen: EF içi tablo recall %90,
+   EF dışı (raw SQL) %0, kolon recall %83, precision %100.
+   Diagnostics "bakamadım" diyebiliyor — bu bilgi kaybolmamalı.
+   - Bir akışta raw SQL diagnostic'i varsa response bunu AÇIKÇA taşımalı:
+     "Discovery modülünde 4 noktada raw SQL var, o tablolar bu listede yok."
+   - Sessizce eksik liste dönmek, %100 precision'ın değerini yok eder.
+   Response'ta ayrı bir "limitations" alanı mı olsun?
+
+B) L8 gürültüsü: Result.Success / Error.Validation gibi utility node'lar
+   graph'ta "utility" işaretli. Response'ta filtrelensin mi, yoksa
+   ?includeUtility=false parametresiyle opsiyonel mi olsun?
+
+C) İkinci sınıf kenarlar (EntityConstruction, SaveChangesWithEntityParameter,
+   SaveChangesInterceptor) ve [ambiguous] işaretleri response'a nasıl
+   yansıyacak? Faz 3 üç farklı DI şeklinin (dekoratör / koleksiyon
+   enjeksiyonu / config seçimi) tek etiketle gösterilmesinin yanlış
+   olduğunu ölçtü.
+
+KAPSAM DIŞI: LLM, /ask, web arayüzü, Mermaid (Faz 5), MCP server. Önerme.
+
+--- Kabul kriterleri ---
+
+- Beş endpoint çalışıyor, HİÇBİRİ LLM çağırmıyor ve HİÇBİRİ solution
+  yüklemiyor
+- /trace?node=POST /api/ordering/checkout → 12 tablo, 62 kolon döndürüyor
+- /backward?node=table:ordering.orders → kökler RootKind'a göre gruplu
+- Her response'ta: sonuç + her madde için dosya:satır + traverse edilen
+  node sayısı + bilinen sınırlar
+- Bir istek < 2 saniye
+- Graph yoksa açık hata mesajı, sessiz boş liste YOK
+- Testler: her endpoint için integration test, graph eksik senaryosu
+- Faz 3'ün testleri yeşil kalıyor
+
+Bitince .http dosyası veya curl örnekleriyle beş çağrının çıktısını göster.
 ```
 
 ---
 
-## Faz 5a — Triage Bot
+## Faz 5 — Dokümantasyon & görselleştirme
 
-### [KEŞİF + UYGULAMA birlikte]
+> **Neden burada:** Faz 4'ün API'si var, veri hazır. Bu, projenin en geniş
+> kitleye hitap eden çıktısı — ekibe yeni katılan biri "bu akış nereden
+> nereye gidiyor" sorusunu kimseye sormadan cevaplayabiliyor. Ve eskimeyen
+> bir dokümantasyon, elle yazılan her dokümantasyondan değerli.
+> Hâlâ LLM YOK.
+
+### [KEŞİF]
 
 ```
-@docs/FlowLens-Roadmap.md — Faz 5a'yı oku.
+@docs/FlowLens-Roadmap.md — Faz 5'i oku.
+@docs/known-limitations.md ve @docs/phase-3-summary.md dosyalarını da oku.
+
+Bu fazda LLM YOK. graph.json'dan deterministik olarak markdown ve Mermaid
+üretiyoruz.
+
+Kod yazmadan planını sun:
+
+--- Üretilecek çıktılar ---
+
+1. ENDPOINT AKIŞ DİYAGRAMLARI — endpoint başına bir Mermaid flowchart
+   Endpoint → Handler → Repository → Table, event köprüleri ayrı kenar
+   stiliyle. Node'lara dosya:satır etiketi.
+
+2. MODÜL DOKÜMANTASYONU — modül başına markdown
+   Hangi endpoint'ler, hangi tablolar (R/W ayrımıyla), hangi event'ler
+   publish/consume ediliyor, hangi modüllere bağımlı, bilinen sınırlar.
+
+3. MODÜL BAĞIMLILIK GRAFİĞİ — tek bir Mermaid diyagram
+   Hangi modül hangisine dokunuyor, senkron çağrı mı event mi ayrımıyla.
+   Mimari ihlaller burada görünür hale gelir.
+
+4. INDEX — üretilen her şeyi bağlayan bir README
+
+--- Sorular ---
+
+1. Checkout 180 node içeriyor; ham haliyle Mermaid'e dökülürse okunamaz.
+   Nasıl daraltacaksın? Seçenekler: utility node filtresi, sadece
+   Endpoint/Handler/Repository/Table/Event tiplerini gösterme, derinlik
+   sınırı, veya "katman" bazlı gruplama. Kararını gerekçelendir ve
+   OKUNABİLİRLİĞİ ölçüt al — 15-25 node'luk bir diyagram hedefle.
+
+2. Mermaid'in GitHub'da render sınırları var (node sayısı, etiket
+   uzunluğu, özel karakterler). Route'lardaki {id:guid} gibi süslü
+   parantezler ve / karakterleri escape gerektiriyor mu? Test et.
+
+3. Modüller arası event köprüleri diyagramda nasıl gösterilecek —
+   subgraph ile modül kutuları mı, farklı kenar stili mi?
+
+4. CLI arayüzü: `flowlens docs -o docs/` tüm çıktıyı üretsin mi, yoksa
+   `--endpoint`, `--module` gibi filtreler mi olsun?
+
+5. Üretilen dosyalar repoya commit'lenecek mi, yoksa .gitignore'da mı
+   olacak? İkisinin de gerekçesi var — karar ver ve yaz.
+
+--- Kabul kriterleri ---
+
+- `flowlens docs -o out/` çalışıyor, LLM çağırmıyor, solution yüklemiyor
+- 25 endpoint için diyagram + 9 modül için doküman + 1 bağımlılık grafiği
+- Üretilen Mermaid GitHub'da HATASIZ render oluyor (en az 3 tanesini
+  gerçekten GitHub'da veya mermaid.live'da doğrula, ekran çıktısını bildir)
+- Her diyagram/doküman dosya:satır referansı taşıyor
+- Bilinen sınırlar (raw SQL modülleri) ilgili dokümanda AÇIKÇA yazıyor —
+  Discovery dokümanı "bu modülün tabloları görünmüyor, sebebi ham SQL"
+  demeli
+- Çıktı %100 deterministik: aynı graph.json iki kez çalıştırıldığında
+  byte-identical sonuç
+- Faz 4'ün testleri yeşil kalıyor
+
+Bitince checkout diyagramını ve Ordering modül dokümanını bana göster.
+```
+
+---
+
+## Faz 6 — Triage Bot (deterministik)
+
+### [KEŞİF]
+
+```
+@docs/FlowLens-Roadmap.md — Faz 6'yı oku.
 
 Bu faz mevcut altyapının ters yönde kullanımı, yeni bir sistem değil.
-Önce kısa bir plan sun, sonra uygula:
+LLM YOK — özet cümlesi bile yazılmayacak, çıktı yapılandırılmış rapor.
+
+Kod yazmadan planını sun:
 
 Akış:
 1. Input: stack trace metni (veya exception type + method name)
-2. Stack trace'i parse et, proje-içi (ModularCommerce namespace'li) en üstteki
-   frame'i bul
+2. Stack trace'i parse et, proje-içi (ModularCommerce namespace'li) en
+   üstteki frame'i bul
 3. O symbol'ü graph'ta eşleştir
-4. Backward(symbolId) → bu metoda hangi endpoint'lerden ulaşılıyor
-5. İlgili dosyalar için `git log --oneline -5 -- <filePath>` çalıştır
-6. Incident report üret
+4. Backward(symbolId) → hangi endpoint / consumer / background job'dan
+   ulaşılıyor (RootKind'a göre gruplu)
+5. Forward(symbolId) → bu noktadan sonra hangi tablolara dokunuluyor
+6. `git log --oneline -5 -- <filePath>` ile ilgili dosyalardaki son
+   commit'leri çek
+7. Incident report üret
 
-Report içeriği:
-- Hata konumu (dosya:satır)
-- Etkilenen endpoint'ler ve akışlar
-- Bu akıştaki tablo/kolonlar
-- İlgili dosyalardaki son 5 commit, tarih ve yazarla
-- LLM ile yazılmış kısa özet: "muhtemel şüpheli" değerlendirmesi
+Sorular:
+1. Stack trace parse: .NET stack trace formatı, async metotların
+   MoveNext() gürültüsü, generic metotlar. Hangi satırları eleyeceksin?
+2. Symbol eşleştirme: stack trace'teki isim ile graph node id'si aynı
+   formatta değil. Nasıl eşleştireceksin? Eşleşmezse ne olacak?
+3. git komutunu nasıl çalıştıracaksın — Process.Start mı, LibGit2Sharp mı?
+   Hedef repo yolu nereden gelecek?
+4. Çıktı formatı: markdown mı, JSON mı, ikisi de mi?
 
 SINIR — bunları YAPMA:
 - Otomatik branch açma
 - Otomatik fix yazma
-- Herhangi bir git write işlemi
+- Herhangi bir git WRITE işlemi (sadece log okuma)
+- LLM ile özet yazma
 
 Çıktı bir rapordur. Nedenini docs/design-decisions.md'ye yaz:
-alert storm'da loop riski, log'lardaki PII'nin LLM'e gitmesi, review
+alert storm'da loop riski, log'lardaki PII'nin dışarı çıkması, review
 edilmemiş patch'in yarattığı sahte güven.
 
-Kabul kriteri: gerçek bir exception stack trace'i verildiğinde doğru
-endpoint'leri ve son commit'leri içeren rapor üretiliyor.
+--- Kabul kriterleri ---
+
+- Gerçek bir exception stack trace'i verildiğinde doğru endpoint'leri,
+  tabloları ve son commit'leri içeren rapor üretiliyor
+- Kökler RootKind'a göre gruplu ("2 endpoint + 1 background job")
+- Eşleşmeyen frame'ler sessizce atlanmıyor, raporda listeleniyor
+- git komutu başarısız olursa (repo yok, git yok) açık hata
+- En az 2 gerçek stack trace ile test edildi
+- Faz 5'in testleri yeşil kalıyor
 ```
 
 ---
 
-## Faz 5b — Eval set
+## Faz 7 — Eval set
+
+> **Bu adım opsiyonel değil.** Faz 3'te 110 test yeşilken graph üç yerde
+> sessiz yanlış cevap veriyordu. Testler kodun çalıştığını doğrular;
+> eval set cevabın doğru olduğunu doğrular.
 
 ### [UYGULAMA]
 
 ```
-@docs/FlowLens-Roadmap.md — Faz 5b'yi oku.
-
-Bu adım opsiyonel değil. Bu olmadan tool'un çalıştığını iddia edemem.
+@docs/FlowLens-Roadmap.md — Faz 7'yi oku.
+@docs/phase3-validation.md — F1..F10 listesini ve §10.3'teki meta-test
+şartnamesini oku.
 
 1. evals/questions.json oluştur — 20 soru. Her biri:
    {
      "id": "eval-01",
      "question": "Sipariş iptal akışı hangi tabloları etkiliyor?",
-     "expectedTables": ["orders", "order_items", "outbox_messages"],
-     "expectedColumns": ["orders.status", "orders.cancelled_at"],
-     "notes": "elle doğrulandı, OrderCancelCommandHandler:34"
+     "node": "endpoint:POST /api/ordering/orders/{id:guid}/cancel",
+     "direction": "forward",
+     "expectedTables": ["ordering.orders", "ordering.order_status_history"],
+     "expectedColumns": ["ordering.orders.Status"],
+     "category": "ef-in|ef-out|cross-module|ambiguous",
+     "notes": "elle doğrulandı, OrderCancelHandler.cs:34 + Migrations/..."
    }
 
-   ÖNEMLİ: expected değerleri sen ModularCommerce kodunu okuyarak çıkar,
-   ama FlowLens'in çıktısına BAKMADAN. Bu bir test seti, tool'un çıktısının
-   kopyası değil. Her soru için hangi kod dosyalarını okuduğunu notes'a yaz.
+   KRİTİK: expected değerlerini ModularCommerce KAYNAK KODUNU ve
+   Migrations/*.cs'i okuyarak çıkar, FlowLens'in çıktısına BAKMADAN.
+   Bu bir test seti, tool'un çıktısının kopyası değil. Her soru için
+   hangi dosyaları okuduğunu notes'a yaz.
 
-   Soru dağılımı: 12 kolay/orta akış, 4 event üzerinden modül geçen akış,
-   4 zor vaka (interface ambiguity, dinamik çağrı içeren).
+   Dağılım: 12 kolay/orta akış · 4 event üzerinden modül geçen akış ·
+   4 zor vaka. ZORUNLU: en az 2 soru Discovery modülünden (EF dışı,
+   ham SQL) — Faz 3'te bu atlandığı için iki roadmap kategorisi hiç
+   ölçülmemişti.
 
-2. evals/run.cs — tüm soruları çalıştırıp karşılaştıran runner yaz.
+2. evals/ altında runner yaz — tüm soruları koşup karşılaştıran.
 
 3. Metrikler:
-   - Recall = bulunan doğru tablo / beklenen tablo   ← öncelikli metrik
-   - Precision = bulunan doğru tablo / dönen tüm tablo
-   - Tablo seviyesi ve kolon seviyesi ayrı raporlanacak
+   - Recall = bulunan doğru / beklenen        ← öncelikli metrik
+   - Precision = bulunan doğru / dönen tüm
+   - Tablo seviyesi ve kolon seviyesi AYRI
+   - EF içi ve EF dışı AYRI raporlanacak — tek ortalama aracın nerede
+     kör olduğunu gizler
 
-4. evals/report.md — sonuç raporu:
-   - Genel recall/precision
-   - Başarısız her vaka için: ne bekleniyordu, ne geldi, neden kaçtı
-   - Kaçırma nedenleri kategorize edilecek: reflection, dynamic dispatch,
-     string-based SQL, interface ambiguity, diğer
+4. evals/report.md:
+   - Genel ve kategori bazlı recall/precision
+   - Başarısız her vaka: ne bekleniyordu, ne geldi, neden kaçtı
+   - Kaçırma nedenleri kategorize: reflection, dynamic dispatch,
+     raw SQL, interface ambiguity, diğer
 
-Recall %100 çıkarsa şüphelen — eval set'in çok kolay demektir, zor vaka ekle.
+5. META-TEST: F1–F10'un her biri için "bu eval set o farkı görünür
+   kılıyor mu" tablosu. Kılmayan varsa eval set eksiktir, soru ekle.
+
+Recall %100 çıkarsa ŞÜPHELEN — eval set çok kolay demektir, zor vaka ekle.
 ```
 
 ---
+
+## Faz 8 — Doğal dil arayüzü (opsiyonel, izole)
+
+> **Neden en sonda:** kurumlar kaynak kodunu harici LLM'e göndermek
+> istemiyor; LLM'siz çalışan bir tool doğrudan kurulabilir. Ayrıca LLM
+> doğruluğa hiçbir şey katmıyor — Faz 4 zaten %100 precision veriyor.
+> Bu katman konfor ekliyor ve projenin tezini *gösterilebilir* kılıyor.
+
+### [KEŞİF]
+
+```
+@docs/FlowLens-Roadmap.md — Faz 8'i ve Bölüm 4'teki izolasyon kuralını oku.
+
+Kod yazmadan planını sun:
+
+--- İZOLASYON (pazarlık konusu değil) ---
+
+- FlowLens.Llm AYRI bir proje olacak
+- FlowLens.Core ona referans VERMEYECEK — bağımlılık tek yönlü
+- Yapılandırmayla kapatılabilecek; kapalıyken Faz 4-7'nin her şeyi çalışır
+- Kapalıyken LLM SDK'sı build'e girmeyecek
+- Kodun tamamı LLM'e GÖNDERİLMEYECEK — yalnız kullanıcının sorusu ve
+  C# tarafından hazırlanmış dar bir node listesi
+- Self-hosted/yerel model kullanılabilir olsun: endpoint ve model adı
+  yapılandırmadan gelsin, sağlayıcıya sıkı bağlanma
+
+Planın bu kısıtları nasıl karşıladığını açıkça anlat.
+
+--- Akış ---
+
+1. Soru → LLM #1 → { "target": "...", "direction": "forward|backward" }
+2. target → graph'ta fuzzy match → node id            [C# kodu]
+3. Faz 4'ün Forward/Backward'ını çağır                [C# kodu]
+4. Sonuç → LLM #2 → analiste yazılmış cevap + citations
+
+1. LLM #1 prompt taslağı ve JSON schema. Parse hatası / schema
+   uyumsuzluğunda ne olacak?
+2. Fuzzy matching stratejisi. Birden fazla yakın eşleşme varsa?
+3. LLM #2 prompt taslağı. Her iddianın dosya:satır taşımasını nasıl
+   garanti edeceksin? Graph'ta olmayanı söylemesini nasıl engelleyeceksin?
+4. Node bütçesi: checkout 180 node döndürüyor. Nasıl daraltacaksın —
+   utility filtresi, tablo/kolon özeti, yoksa tam ağaç mı?
+5. Eşleşme bulunamazsa akış?
+6. Timeout, retry, circuit breaker — hangisi gerekli?
+7. Faz 3'ün ölçtüğü sınırlar (raw SQL, F5 outbox kolonları) cevaba nasıl
+   yansıyacak? LLM bunları uydurmamalı ama gizlememeli de.
+
+--- Kabul kriterleri ---
+
+- POST /ask çalışıyor
+- LLM kapalıyken uygulama açılıyor ve Faz 4-7 endpoint'leri çalışıyor
+  (bunun testi VAR)
+- FlowLens.Core'un FlowLens.Llm'e referansı YOK (mimari test ile sabitli)
+- Response'ta: özet + tablolar/kolonlar + dosya:satır + node sayısı +
+  bilinen sınırlar
+- LLM #1 çıktısı structured output ile validate ediliyor, invalid ise retry
+- Eşleşme bulunamayınca uydurmuyor, "bulamadım" + öneri listesi dönüyor
+- API key user secrets'tan okunuyor; kodda ve appsettings.json'da YOK
+- Faz 7'nin eval set'i /ask üzerinden de koşuyor ve deterministik API ile
+  AYNI sonucu veriyor — fark varsa LLM katmanı bilgi kaybediyor demektir
+- Faz 7'nin testleri yeşil kalıyor
+
+Bitince şu üç soruyu dene ve çıktıları göster:
+  "İade akışı hangi tablolara ve kolonlara dokunuyor?"
+  "ordering.orders tablosuna kim yazıyor?"
+  "Ürün aramaya yeni bir filtre eklesek neresi etkilenir?"  (raw SQL vakası)
+```
+
+---
+
 
 ## Yardımcı prompt'lar
 

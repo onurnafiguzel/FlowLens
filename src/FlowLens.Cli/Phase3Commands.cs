@@ -1,4 +1,5 @@
 using FlowLens.Core;
+using FlowLens.Core.Answers;
 using FlowLens.Core.Ef;
 
 namespace FlowLens.Cli;
@@ -90,7 +91,7 @@ public static class Phase3Commands
         }
 
         var graph = GraphJson.ToGraph(document);
-        var startId = Resolve(graph, options.EndpointSelector!);
+        var startId = NodeResolver.Resolve(graph, options.EndpointSelector!);
 
         if (startId is null)
         {
@@ -311,39 +312,37 @@ public static class Phase3Commands
     /// </summary>
     private static void PrintDataLayer(Subgraph subgraph)
     {
-        var tables = subgraph.Nodes.Where(n => n.Kind == NodeKind.Table).ToList();
+        // Computed in Core (AnswerBuilder), rendered here. The read/write derivation used to live
+        // in this file, which meant the HTTP API could only reuse it by reimplementing it - and two
+        // implementations of one rule drift without anyone noticing.
+        //
+        // Called for BOTH directions, unchanged. That is F10 in docs/known-limitations.md: on a
+        // backward trace this block lists the TARGET's own columns, not what the reaching flows
+        // write. The API fixes it by carrying no data layer on a backward answer; fixing it here
+        // would change output this phase verifies byte-for-byte, so it stays a separate decision.
+        var dataLayer = AnswerBuilder.DataLayer(subgraph);
 
-        if (tables.Count == 0)
+        if (dataLayer.Tables.Count == 0)
         {
             return;
         }
 
-        var columnsByTable = subgraph.Nodes
-            .Where(n => n.Kind == NodeKind.Column)
-            .Select(n => n.Id[NodeId.ColumnPrefix.Length..])
-            .Select(id => (Table: id[..id.LastIndexOf('.')], Column: id[(id.LastIndexOf('.') + 1)..]))
-            .GroupBy(x => x.Table, StringComparer.Ordinal)
-            .ToDictionary(
-                g => g.Key,
-                g => g.Select(x => x.Column).Order(StringComparer.Ordinal).ToList(),
-                StringComparer.Ordinal);
+        var width = Math.Min(38, dataLayer.Tables.Max(t => t.Table.Length));
 
-        var access = AccessByTable(subgraph);
-        var width = Math.Min(38, tables.Max(t => t.DisplayName.Length));
-
-        Console.WriteLine($"  Data layer - {tables.Count} table(s), " +
-                          $"{columnsByTable.Values.Sum(c => c.Count)} column(s):");
+        Console.WriteLine($"  Data layer - {dataLayer.Tables.Count} table(s), " +
+                          $"{dataLayer.ColumnCount} column(s):");
         Console.WriteLine();
 
-        foreach (var table in tables.OrderBy(t => t.DisplayName, StringComparer.Ordinal))
+        foreach (var table in dataLayer.Tables)
         {
-            Console.WriteLine(
-                $"    {access.GetValueOrDefault(table.Id, "  "),-2}  " +
-                $"{table.DisplayName.PadRight(width)}  {table.Location}");
+            var access = table.Access.Length == 0 ? "  " : table.Access;
 
-            if (columnsByTable.TryGetValue(table.DisplayName, out var columns))
+            Console.WriteLine(
+                $"    {access,-2}  {table.Table.PadRight(width)}  {table.Location}");
+
+            if (table.Columns.Count > 0)
             {
-                Console.WriteLine($"          {string.Join(", ", columns)}");
+                Console.WriteLine($"          {string.Join(", ", table.Columns.Select(c => c.Name))}");
             }
         }
 
@@ -352,91 +351,13 @@ public static class Phase3Commands
         Console.WriteLine();
     }
 
-    /// <summary>
-    /// Whether each table is read, written, or both. Derived from the edges rather than assumed:
-    /// a table reached only through a query must not look like a write, which is the distinction
-    /// that decides whether a change to it needs a migration.
-    /// </summary>
-    private static Dictionary<string, string> AccessByTable(Subgraph subgraph)
-    {
-        // entity -> tables it maps to
-        var tablesByEntity = subgraph.Edges
-            .Where(e => e.Kind == EdgeKind.MapsTo && e.FromId.StartsWith(NodeId.EntityPrefix, StringComparison.Ordinal))
-            .GroupBy(e => e.FromId, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.Select(e => e.ToId).ToList(), StringComparer.Ordinal);
-
-        var reads = new HashSet<string>(StringComparer.Ordinal);
-        var writes = new HashSet<string>(StringComparer.Ordinal);
-
-        foreach (var edge in subgraph.Edges)
-        {
-            if (edge.Kind is not (EdgeKind.Reads or EdgeKind.Writes))
-            {
-                continue;
-            }
-
-            var target = edge.Kind == EdgeKind.Writes ? writes : reads;
-
-            if (tablesByEntity.TryGetValue(edge.ToId, out var mapped))
-            {
-                foreach (var table in mapped)
-                {
-                    target.Add(table);
-                }
-            }
-
-            // A direct column write also establishes a write on its table.
-            if (edge.ToId.StartsWith(NodeId.ColumnPrefix, StringComparison.Ordinal))
-            {
-                var id = edge.ToId[NodeId.ColumnPrefix.Length..];
-                writes.Add(NodeId.ForTable(id[..id.LastIndexOf('.')]));
-            }
-        }
-
-        return reads.Union(writes).ToDictionary(
-            table => table,
-            table => (writes.Contains(table) ? "W" : string.Empty) + (reads.Contains(table) ? "R" : string.Empty),
-            StringComparer.Ordinal);
-    }
-
     // ---------------------------------------------------------------- selection
-
-    /// <summary>
-    /// Accepts either a node id or a route. Node ids are exact; a route is turned into one, which
-    /// keeps "POST /api/ordering/checkout" working the same way it does for the live trace.
-    /// </summary>
-    private static string? Resolve(CodeGraph graph, string selector)
-    {
-        var trimmed = selector.Trim();
-
-        if (graph.Contains(trimmed))
-        {
-            return trimmed;
-        }
-
-        var asEndpoint = NodeId.EndpointPrefix + Normalize(trimmed);
-        if (graph.Contains(asEndpoint))
-        {
-            return asEndpoint;
-        }
-
-        return graph.Nodes
-            .FirstOrDefault(n =>
-                string.Equals(n.DisplayName, trimmed, StringComparison.OrdinalIgnoreCase)
-                || string.Equals(Normalize(n.DisplayName), Normalize(trimmed), StringComparison.Ordinal))
-            ?.Id;
-    }
 
     private static void ReportNoMatch(CodeGraph graph, string selector)
     {
         Console.Error.WriteLine($"error: no node matches \"{selector}\".");
 
-        var needle = selector.Trim();
-        var near = graph.Nodes
-            .Where(n => n.DisplayName.Contains(needle, StringComparison.OrdinalIgnoreCase)
-                || n.Id.Contains(needle, StringComparison.OrdinalIgnoreCase))
-            .Take(10)
-            .ToList();
+        var near = NodeResolver.NearMatches(graph, selector);
 
         if (near.Count == 0)
         {
@@ -444,14 +365,11 @@ public static class Phase3Commands
         }
 
         Console.Error.WriteLine("Did you mean:");
-        foreach (var node in near)
+        foreach (var id in near)
         {
-            Console.Error.WriteLine($"  {node.Id}");
+            Console.Error.WriteLine($"  {id}");
         }
     }
-
-    private static string Normalize(string value) =>
-        value.Trim().ToUpperInvariant().Replace("  ", " ", StringComparison.Ordinal);
 
     private static string Short(string clrTypeName) =>
         clrTypeName[(clrTypeName.LastIndexOf('.') + 1)..];

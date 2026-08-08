@@ -322,6 +322,75 @@ public sealed class Phase3IntegrationTests(Phase3Fixture fixture)
     }
 
     /// <summary>
+    /// Measured regression: MigrateAndSeedHostedService is declared in Shared, so the structural
+    /// utility rule tagged it as plumbing - but it is a BackgroundService root that seeds
+    /// catalog.products and inventory.stock_items. A consumer thinning utility nodes lost it from
+    /// four backward answers, i.e. lost an entry point from "who writes this table?". Anchored on
+    /// the invariant across the whole population, not on that one node.
+    /// </summary>
+    [Fact]
+    public void NoRootIsTaggedAsUtility() =>
+        Assert.Empty(fixture.Build.Document.Nodes
+            .Where(n => n.RootKind != RootKind.None && n.Utility)
+            .Select(n => n.Id));
+
+    /// <summary>
+    /// THE invariant behind the utility tag: thinning it changes the ANSWER, never the REACHABILITY.
+    /// <para>
+    /// Asserted over the whole population - every endpoint forward and every table backward - and on
+    /// the non-utility NODE SET, not on tables and columns. The narrower check is what let the bug
+    /// through: dropping utility nodes mid-traversal cost no table and no column, so a table-level
+    /// diff read as clean, while four backward answers had silently lost a background-job root
+    /// (MigrateAndSeedHostedService, reached only through the Shared-declared IDataSeeder).
+    /// </para>
+    /// <para>
+    /// With the filter applied to the result instead, this holds by construction. The test is here
+    /// so it stays that way rather than being rediscovered by hand.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void ThinningUtilityNodesNeverChangesWhatIsReachable()
+    {
+        var graph = fixture.Build.Graph;
+
+        var starts = graph.Nodes
+            .Where(n => n.Kind is NodeKind.Endpoint or NodeKind.Table)
+            .Select(n => n.Id)
+            .ToList();
+
+        Assert.NotEmpty(starts);
+
+        var differences = new List<string>();
+
+        foreach (var start in starts)
+        {
+            Compare("forward", start, graph.ForwardSubgraph);
+            Compare("backward", start, graph.BackwardSubgraph);
+        }
+
+        Assert.Empty(differences);
+
+        void Compare(string direction, string start, Func<string, TraversalQuery, Subgraph> walk)
+        {
+            var full = NonUtility(walk(start, new TraversalQuery(IncludeUtility: true)));
+            var thinned = NonUtility(walk(start, new TraversalQuery(IncludeUtility: false)));
+
+            foreach (var lost in full.Except(thinned, StringComparer.Ordinal))
+            {
+                differences.Add($"{direction} {start}: lost {lost}");
+            }
+
+            foreach (var gained in thinned.Except(full, StringComparer.Ordinal))
+            {
+                differences.Add($"{direction} {start}: gained {gained}");
+            }
+        }
+
+        static HashSet<string> NonUtility(Subgraph subgraph) =>
+            subgraph.Nodes.Where(n => !n.Utility).Select(n => n.Id).ToHashSet(StringComparer.Ordinal);
+    }
+
+    /// <summary>
     /// The measured case behind RootKind: the TTL sweeper reads ordering.orders through
     /// OrderReservationReconciler, so "who writes this table" is four endpoints AND a background
     /// job. Anchored on the table and the kind, never on a count.
@@ -376,6 +445,43 @@ public sealed class Phase3IntegrationTests(Phase3Fixture fixture)
         Assert.Contains(NodeId.ForColumn("ordering.order_status_history", "order_id"), reached);
         Assert.DoesNotContain(NodeId.ForColumn("ordering.orders", "IdempotencyKey"), reached);
         Assert.DoesNotContain(NodeId.ForColumn("ordering.orders", "CreatedAtUtc"), reached);
+    }
+
+    /// <summary>
+    /// Order-independence on the REAL graph, not a three-node fixture: writing the built document
+    /// and writing a shuffled copy of it must produce identical bytes. This is the property a
+    /// second build would exercise, without spending another 32 seconds to get one arbitrary
+    /// permutation out of many.
+    /// </summary>
+    [Fact]
+    public void TheBuiltGraphSerialisesIdenticallyWhateverOrderItIsIn()
+    {
+        var document = fixture.Build.Document;
+
+        // A fixed rotation rather than a random shuffle: a test that fails one run in ten is worse
+        // than no test, and rotation already breaks any dependence on the discovery order.
+        var shuffled = document with
+        {
+            Nodes = [.. document.Nodes.Skip(7), .. document.Nodes.Take(7)],
+            Edges = [.. document.Edges.Reverse()],
+        };
+
+        Assert.Equal(Write(document), Write(shuffled));
+
+        static string Write(GraphDocument value)
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"flowlens-order-{Guid.NewGuid():N}.json");
+
+            try
+            {
+                GraphJson.Write(path, value);
+                return File.ReadAllText(path);
+            }
+            finally
+            {
+                File.Delete(path);
+            }
+        }
     }
 
     /// <summary>The written graph must satisfy the same invariants the writer enforces.</summary>

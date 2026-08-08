@@ -12,6 +12,13 @@ public sealed class InvalidGraphException(string message) : Exception(message);
 /// How each edge was derived. Split out because a WRITES edge inferred from a bare SaveChanges is
 /// not the same claim as one read off context.Orders.Add, and a single count would hide that.
 /// </param>
+/// <param name="ElapsedMs">
+/// Build wall-clock. Deliberately NOT serialised: an artifact that embeds its own build duration
+/// can never be byte-identical across two builds of unchanged source, and that reproducibility is
+/// what makes graph.json's diff readable and Phase 5's output deterministic. The number is still
+/// reported on the console, where it belongs - it says something about the machine, not about the
+/// graph. Consumers that want freshness read the file's timestamp.
+/// </param>
 public sealed record GraphStats(
     IReadOnlyDictionary<string, int> NodesByType,
     IReadOnlyDictionary<string, int> EdgesByType,
@@ -19,7 +26,7 @@ public sealed record GraphStats(
     int AmbiguousNodes,
     int UtilityNodes,
     int RootCount,
-    long ElapsedMs);
+    [property: JsonIgnore] long ElapsedMs);
 
 /// <param name="Diagnostics">
 /// Everything the build knew it could not represent: raw SQL sites, properties with no column,
@@ -76,8 +83,44 @@ public static class GraphJson
             Directory.CreateDirectory(directory);
         }
 
-        File.WriteAllText(path, JsonSerializer.Serialize(document, Options));
+        File.WriteAllText(path, JsonSerializer.Serialize(Canonical(document), Options));
     }
+
+    /// <summary>
+    /// The same graph always serialises to the same bytes, whatever order it was discovered in.
+    /// <para>
+    /// Measured: two builds of an unchanged target produced set-identical files - 415 nodes and 966
+    /// edges, zero differences - in which 8 nodes and 40 edges had simply moved. The cause is
+    /// upstream of this file (<c>SymbolFinder.FindImplementationsAsync</c> does not promise an
+    /// order), so the fix belongs here rather than in every producer.
+    /// </para>
+    /// <para>
+    /// Why it matters more than tidiness: a one-field change showed up as a 216-line diff, 214 of
+    /// them noise. Phase 3's four real bugs were found by READING graph.json, and that is not
+    /// possible against that much churn. Phase 5 also requires byte-identical output from an
+    /// unchanged graph, which a random order can never satisfy.
+    /// </para>
+    /// <para>
+    /// The keys are total. Node ids are unique by construction - they are the builder's dictionary
+    /// key. Edges sort on every field they carry, so two edges that tie on the key are identical
+    /// records and their relative order cannot change a byte.
+    /// </para>
+    /// </summary>
+    public static GraphDocument Canonical(GraphDocument document) => document with
+    {
+        Nodes = [.. document.Nodes.OrderBy(n => n.Id, StringComparer.Ordinal)],
+        Edges =
+        [
+            .. document.Edges
+                .OrderBy(e => e.FromId, StringComparer.Ordinal)
+                .ThenBy(e => e.ToId, StringComparer.Ordinal)
+                .ThenBy(e => e.Kind)
+                .ThenBy(e => e.Mechanism)
+                .ThenBy(e => e.Evidence ?? string.Empty, StringComparer.Ordinal)
+                .ThenBy(e => e.Ambiguous),
+        ],
+        Diagnostics = [.. document.Diagnostics.OrderBy(d => d, StringComparer.Ordinal)],
+    };
 
     public static GraphDocument Read(string path)
     {
@@ -113,6 +156,18 @@ public static class GraphJson
             if (node.Line <= 0)
             {
                 problems.Add($"{node.Id} has line {node.Line}");
+            }
+
+            // A root cannot be plumbing. The utility tag is structural (declaring module is
+            // Shared), and Shared holds both real helpers and one real entry point -
+            // MigrateAndSeedHostedService, a BackgroundService that seeds two tables. Tagged as
+            // utility it vanished from four backward answers for any consumer that thins utility
+            // nodes, taking a "who writes this table?" answer with it. GraphBuilder clears the tag
+            // on every root; this is the check that keeps it cleared, so the next root declared in
+            // Shared cannot repeat it silently.
+            if (node.RootKind != RootKind.None && node.Utility)
+            {
+                problems.Add($"{node.Id} is a {node.RootKind} root but is marked utility");
             }
         }
 
