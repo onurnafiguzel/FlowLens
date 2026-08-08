@@ -21,26 +21,35 @@
 
 ## 2. Ölçülen sayılar
 
+Faz 3 sonu, `phase3-validation.md` §8'in düzeltmeleri dahil.
+
 ```
-32 kök: 25 endpoint · 3 consumer · 4 hosted service
-400 node · 841 kenar · graph.json 512 KB
+32 kök: 25 endpoint · 3 consumer · 4 background service   (hepsi node'unda RootKind taşıyor)
+415 node · 966 kenar · graph.json 637 KB
 
-Node:  Method 166 · Column 82 · Repository 62 · Handler 27 · Endpoint 25
+Node:  Method 166 · Column 97 · Repository 62 · Handler 27 · Endpoint 25
        Entity 17 · Table 16 · Event 4 · ExternalCall 1
-Kenar: CALLS 512 · WRITES 192 · MAPS_TO 99 · READS 31 · PUBLISHES 4 · CONSUMES 3
+Kenar: CALLS 512 · WRITES 302 · MAPS_TO 114 · READS 31 · PUBLISHES 4 · CONSUMES 3
 
-Mekanizma: EfModelMapping 99 · EntityConstructorAssignment 67 · PropertyAssignment 52
-           DbSetProperty 47 · OwnedCollectionAdd 19 · SaveChangesInterceptor 7
-           DomainEventRegistry 4 · ConsumerRegistration 3 · FluentChainHead 3
-           HttpClientInvocation 1 · ExecuteUpdateSetProperty 1
+Mekanizma: EfModelMapping 114 · RowInsert 109 · EntityConstructorAssignment 67
+           PropertyAssignment 53 · DbSetProperty 47 · OwnedCollectionAdd 19
+           SaveChangesInterceptor 7 · DomainEventRegistry 4 · ConsumerRegistration 3
+           FluentChainHead 3 · HttpClientInvocation 1 · ExecuteUpdateSetProperty 1
            EntityConstruction 17  ← ikinci sınıf
            SaveChangesWithEntityParameter 10  ← ikinci sınıf
 
-EF modeli: 8 context, 18 entity tipi, 16 tablo (1,4 s)
+EF modeli: 8 context, 18 entity tipi, 16 tablo (1,3 s)
 22 ambiguous · 15 utility (Shared)
 ```
 
-**İkinci sınıf kenar oranı: 27/841 (%3,2).** Faz 5 eval set'i bu ikisini ayrı ölçmeli.
+**İkinci sınıf kenar oranı: 27/966 (%2,8).** Faz 5 eval set'i bu ikisini ayrı ölçmeli.
+
+Doğrulama ölçümleri (`phase3-validation.md`): forward tablo recall **%82**, kolon recall **%83**,
+precision **%100**; backward recall/precision **%100**.
+
+> **Önceki sayılar** (denetim sonrası, satır düzeyi kural öncesi): 400 node · 841 kenar · 82 kolon ·
+> WRITES 192 · MAPS_TO 99, kolon recall %66. Aradaki fark tek bir kuraldan geliyor — bir INSERT'in
+> tüm kolonlarını saymak (§5.10).
 
 ### Performans — 3 koşu
 
@@ -346,6 +355,84 @@ event üretmeyen bir `SaveChanges` outbox'a dokunmaz. Impact analizi için doğr
 
 Sonuç: checkout artık **12 tablo** raporluyor (önce 11).
 
+### 5.9 Interceptor'ı kolon düzeyine taşımak bir KÖK kararıdır — B seçildi
+
+`phase3-validation.md` F5'i ölçtü: interceptor kuralı tablo düzeyinde çalışıyor ama
+`ordering.outbox_messages`'ın **4 kolonu** (`Id`, `Type`, `Content`, `OccurredOnUtc`) hiçbir
+akışta görünmüyor. Atamalar `DomainEventToOutboxInterceptor.cs:59-64`'te duruyor.
+
+İlk yazdığım düzeltme cümlesi şuydu: *"interceptor gövdesi ayrı bir kök olarak analiz edilir."*
+**Bu cümle bir kapsam değişikliğini kaçak yoldan içeri sokuyor.** Faz 2'de kök kümesi
+*Endpoint + Consumer + BackgroundService* olarak karara bağlandı; "ayrı kök" demek o kararı
+sessizce geçersiz kılmak olurdu. Ayrıca §5.8'in kendi mantığıyla da çelişirdi.
+
+**A — Interceptor'ı dördüncü bir kök sınıfı yap.**
+Kök kümesi *"bir isteğin, mesajın veya zamanlayıcının başlattığı şey"* olmaktan çıkar,
+*"koşan her şey"* olur. Interceptor bir giriş noktası değil: kimse ona *doğru* yürümez,
+onu EF çağırır. Kök yaparsak `Backward` sorgularında bir outbox kolonunun cevabı
+"interceptor" olur — oysa doğru cevap **o SaveChanges'i çağıran endpoint**. Triage bot için
+bu, şüpheliyi kaybetmek demektir.
+
+**B — Kök kümesi sabit kalır; interceptor'ın yazma kümesi `SaveChanges` çağrı sitesine iliştirilir.**
+§5.8 zaten tam olarak bunu yapıyor — tablo kenarını context/entity üzerinden, akışın *içinden*
+üretiyor. Kolon düzeyi bunun aynı şeklinin devamı: interceptor gövdesi **analiz edilir**
+(kolon kümesini çıkarmak için) ama **yürünmez**; sonuç, o context'e ulaşan her `SaveChanges`
+sitesine bağlanır.
+
+**Karar: B.** Üç gerekçe:
+
+1. **Analiz etmek ≠ kök yapmak.** Gövdeyi okumak için ona yürüyor olmak gerekmiyor.
+   `EfProbe` de hedefin DbContext'lerini kök yapmadan okuyor.
+2. **Cevabın sahibi doğru kalıyor.** `Backward("column:ordering.outbox_messages.Type")` altında
+   checkout ve cancel görünür — Faz 5a'nın istediği cevap bu.
+3. **Graph şişmiyor.** İliştirilen şey **yalnız kolon yazma kümesi**; interceptor'ın kendi çağrı
+   alt ağacı (`mapper.TryMap`, `JsonSerializer.Serialize`) graph'a girmiyor. A seçeneğinde her
+   biri düğüm olurdu ve hiçbiri kimsenin sorusuna cevap değil.
+
+**Bedeli açıkça:** §5.8'in tek yönlü aşırı-yaklaşımı kolon düzeyine de taşınır — event üretmeyen
+bir `SaveChanges` de outbox kolonlarını yazıyor görünür. Tablo düzeyinde kabul edilen yanlılık
+(L15), kolon düzeyinde **dört kat** görünür olur. Impact analizi için hâlâ doğru yön, ama
+`mechanism: SaveChangesInterceptor` etiketi bu iddiaları ayırt edilebilir tutuyor.
+
+**Uygulanmadı** — Faz 3 kabul kriterleri karşılandı, bu bir genişletme. Kararın kendisi burada
+kayıtlı ki uygulanırken tartışma yeniden açılmasın.
+
+### 5.10 Kolon kümesi atamadan üretiliyordu — bir INSERT ise satır yazar
+
+Doğrulamanın (`phase3-validation.md`) en büyük tek bulgusu. Kolon yazmaları
+`AssignmentExpressionSyntax`'ten üretiliyordu; bu bir `UPDATE` için **doğru** ölçüdür
+(`record.UpdatedAtUtc = ...` gerçekten yalnız o kolonu değiştirir) ve bir `INSERT` için yanlış:
+EF entity'nin tüm eşlenmiş kolonlarını yazar, atansın atanmasın.
+
+Kaçan kolonlar rastgele değildi — tam olarak **hiçbir C# ifadesinin adlandıramayacağı** olanlardı:
+
+| Kayıp | Neden görünmüyordu | Şimdi nerede |
+|---|---|---|
+| `identity.users.Id` | base tipte *property initializer* (`= Guid.NewGuid()`), türetilmiş ctor gövdesinde yok | `Shared.Kernel/Entity.cs:7` |
+| `cart.carts.Items` | `OwnsMany(...).ToJson()` kapsayıcısı; iki tarafın da `GetProperties()`'inde yok | `CartRecord.cs:5` |
+| `order_id`, `payment_id`, `id` | gölge property, C# üyesi yok | entity bildirimi |
+
+Graph'ta **`.Id` ile biten tek bir kolon node'u yoktu** — 82'nin hiçbiri.
+
+**Uygulanan kural.** `EntityAccess.WritesWholeRow`: `Add*` (INSERT tüm kolonları listeler),
+`Update*` (EF her property'yi Modified işaretler), ve mapped bir entity'nin inşası. Overlay o
+tablonun **kalan** kolonlarına `mechanism: RowInsert` ile W kenarı üretiyor — 109 kenar.
+
+Üç sınır: `IsRowVersion` hariç (`xmin`'i Postgres yazar) · atamayla adlandırılan kolon kendi kesin
+kenarını korur · gölge kolonun konumu entity bildirimi (uydurma değil, açacağın dosya o).
+
+**Sıra önemliydi:** `EfProbe` kapsayıcı kolonu üretmeden satır kuralı onu bulamazdı.
+
+**Ölçülen etki:** kolon recall %66 → **%83**, INSERT yollarında %60 → **%84**, UPDATE yollarında
+%90 → **%100**. Precision **%100 kaldı** — üç kanaryayla doğrulandı, en anlamlısı: cancel akışı
+`ordering.orders`'ı güncelliyor (2 kolon) ama aynı gövdede `order_status_history`'ye satır ekliyor
+(6 kolon). Kural iki şekli tek gövdede ayırt ediyor.
+
+> **Bir isim geri geldi ve bu sefer doğru.** Checkout artık `payment.payments.RefundedAtUtc`'yi
+> yazıyor gösteriyor. §5.3'te bu bir **hataydı**: okuma, `Table → Column` kenarı üzerinden yazma
+> gibi görünüyordu. Şimdi checkout o tabloya gerçekten satır ekliyor ve INSERT cümlesi kolonu
+> listeliyor. Aynı isim, farklı iddia — `mechanism` alanı tam olarak bunu ayırt etmek için var.
+
 ### Ayrıca: tasarım incelemesinin öngördüğü sızıntı gerçekleşti
 
 3 Infrastructure assembly'sinde birer tip yüklenemedi
@@ -407,6 +494,57 @@ mekanizması gerekmedi.
 Tam olarak **4 Ordering endpoint'i**: checkout, orders listesi, order detayı, cancel.
 Başka modülden sızıntı yok (`BackwardFromTheOrdersTableFindsOnlyOrderingEndpoints`).
 
+Faz 3 sonunda cevap bir satır daha kazandı: `ReservationTtlSweeper` de bu tabloyu okuyor ve artık
+**arka plan işi olarak etiketli** görünüyor (F8 / L18-1). Doğru cevap her zaman buydu; eksik olan
+sunumdu.
+
+```
+Entry points (5): 4 endpoints + 1 background job
+```
+
+> **Ölçüm sonrası not — dördü de doğrulandı.** §6'nın üç endpoint'i elle karşılaştırıldı, dördüncüsü
+> (EF dışı, `POST /api/discovery/search`) sonradan eklendi, backward ayrıca ölçüldü. Rakamlar,
+> gerekçeleri ve on farkın (F1–F10) tamamı `phase3-validation.md`'de.
+
+---
+
+## 6.5 İki komutun adı da "trace" — hangisi veri katmanını veriyor
+
+İki kez yanlış okundu, o yüzden burada da yazılı. **Argüman hangisinin koştuğunu belirliyor:**
+solution yolu Faz 2'nin canlı yürüyüşünü seçer (EF modeli yok → tablo/kolon yok), başka her şey
+`graph.json` üzerinde gezinir.
+
+| Komut | Başlık | Tablo/kolon |
+|---|---|---|
+| `flowlens build <solution> -o graph.json` | Phase 3 (graph build) | üretir |
+| `flowlens trace "POST /api/ordering/checkout"` | Phase 3 (graph traversal) | **evet** |
+| `flowlens trace "table:ordering.orders" --direction backward` | Phase 3 (graph traversal) | **evet** |
+| `flowlens trace <solution> --endpoint "..."` | Phase 2 (call chain) | **hayır** |
+
+**Faz 4'ün `GET /trace`'i ikinci ve üçüncü satırın karşılığıdır** — `graph.json` üzerinde
+`Forward`/`Backward`, süreç başlatma dahil ~1,5 s. Solution yükleyen hiçbir yol API'nin arkasında
+olmayacak (23 s'lik cevap bir API cevabı değildir).
+
+İki düzeltme yapıldı, ikisi de yanlış okumanın kendisini hedefliyor:
+
+1. **`--help` artık veri katmanı yolunu önce ve ayrı bir blokta gösteriyor**; Faz 1/2 komutları
+   *"Everything below is an earlier phase kept for inspection. None of it reports tables or
+   columns."* başlığı altında.
+2. **Faz 2'nin canlı trace'i kendi kendini etiketliyor.** Koşarken başlığın hemen altına, doğru
+   komutu hedefin kendi yoluyla birlikte basıyor:
+
+```
+FlowLens - Phase 2 (call chain)
+      note: this is the live call-chain walk - NO tables or columns. For the data
+            layer, build the graph once and trace that:
+              flowlens build <solution> -o graph.json
+              flowlens trace "POST /api/ordering/checkout"
+```
+
+Yardım metnine güvenmek yerine **koşan komutun kendisi** söylüyor — yanlış komutu çalıştıran kişi
+yardım metnini zaten okumamıştır. Mod seçimi dört `CliOptionsTests` testiyle sabit
+(`BareTraceOfARouteUsesTheBuiltGraph`, `TraceOverASolutionStillRunsTheLiveWalk`, …).
+
 ---
 
 ## 7. graph.json ve CLI
@@ -458,7 +596,11 @@ Yeni exit code'lar: `5` = graph invariant ihlali · `6` = EF modeli okunamadı/g
 
 ## 8. Testler
 
-**125 test, ~74 saniye, 0 atlanan.** Faz 2'den devralınan 57'nin tamamı yeşil.
+**142 test, ~65 saniye, 0 atlanan.** Faz 2'den devralınan 57'nin tamamı yeşil.
+
+Son 17'si doğrulamanın kapattığı üç bulgunun (F1, F3, F8) regresyon kilidi. İkisi **popülasyon**
+üzerinde iddia kuruyor, örneklem üzerinde değil — §10.1a'nın dersi: *"her kök `RootKind` taşır ve
+başka hiçbir node taşımaz"* 415 node'un tamamı için doğrulanıyor.
 
 Yeni: `EfProbeTests` (5, gerçek hedef, Roslyn'siz ~1 s) · `GraphTraversalTests` (7, sentetik) ·
 `GraphJsonTests` (5) · `EntityAccessAnalyzerTests` (9, sentetik) · `Phase3IntegrationTests` (14) ·
@@ -494,3 +636,173 @@ Faz 3 hiçbir LLM çağrısı içermiyor ve içermemeli — doğruluk burada ür
 **Faz 4'e taşınan iki girdi:**
 1. `TraversalQuery.IncludeUtility: false` — LLM'e gönderilecek alt kümeyi küçültmenin hazır kolu.
 2. `mechanism` alanı — LLM'e "bu iddia birinci mi ikinci sınıf mı" bilgisini verebilir.
+
+---
+
+## 10. Faz 5 tasarım girdisi — denetimin dersi
+
+§5.7'nin dört bulgusu ve `phase3-validation.md`'nin on farkı (F1–F10) **testler yeşilken**
+üretilmişti: denetim anında 110 test, doğrulama anında 125 test, hepsi geçiyordu. Bu bölüm o
+vakaların ortak sebebini ve Faz 5'in bunu nasıl yakalaması gerektiğini yazar.
+
+> **Doğrulama kapsamı:** dört endpoint forward (biri bilerek EF dışı — `POST /api/discovery/search`),
+> üç sorgu backward (iki tablo + bir kolon), ve ambiguous politikasının tek-konfigürasyon
+> karşılaştırması. Backward recall/precision **%100** — Faz 5a'nın dayanağı ölçüldü.
+
+### 10.1 Ortak sebep
+
+**Dokuzu da bir YOKLUK'tu; testlerin hepsi bir VARLIK iddia ediyordu.**
+
+Her test şu biçimdeydi: *"şu şekildeki koda karşı şu kenar üretilir."* Böyle bir test yalnız
+**modellenmiş** bir yol hakkında soru sorabilir. Interceptor'ın yazması, endpoint lambda gövdesi,
+owned navigasyon okuması, gölge kolon — bunlar üretim kodunun zihin haritasında yoktu; aynı
+haritayla yazılan testlerde de yoktu. Test suite'i ile üretim kodu **aynı kör noktayı paylaşıyordu**,
+çünkü aynı kişinin aynı modelinden çıkmışlardı.
+
+Bunun üç somut görünümü:
+
+**a) Örneklem vardı, popülasyon yoktu.** `Phase3IntegrationTests` birkaç çapa route ve tablo
+üzerinde iddia kuruyordu. `kind`'ı olmayan 25 node ve 512 kenar, orphan kalan 4 endpoint,
+kolonu olmayan 82 kolon — hiçbiri örneklemin içinde değildi. **400 node'un tamamı üzerinde bir
+özellik iddia eden tek bir test yoktu.**
+
+**b) Round-trip simetrik hatayı göremez.** `GraphJsonTests.RoundTripsNodesEdgesAndMechanisms`
+aynı serializer ile yazıp okuyordu. Yazarken düşen alan okurken de yoktu; eşitlik iddiası geçiyordu.
+Artefakt testi gibi görünen şey aslında bir **model** testiydi. Şimdi eklenen
+`WritesKindEvenWhenItIsTheDefaultEnumValue` doğrudan **metne** bakıyor — fark bu.
+
+**c) Doğrulama tek yönlüydü.** Her assert *"bu var mı?"* diye soruyordu. Hiçbiri *"bu neden yok?"*
+diye sormuyordu. Oysa aracın ürettiği en tehlikeli cevap **boş küme**: "0 tablo", "hiçbir şeye
+dokunmuyor". Doğru boş küme (`GET /`, `GET /api/catalog/products` 0 kolon) ile yanlış boş küme
+(3 dev endpoint) **çıktıda birbirinden ayırt edilemiyordu**. Tüketici ikisini de tam güvenle okur.
+
+Bir de üstü: graph.json bu dört hatayla birlikte **kendi içinde tutarlıydı.** Dangling referans
+yoktu, 400/400 node konumluydu, şema geçerliydi. İçeriden bakan hiçbir kontrol onu yakalayamazdı —
+çünkü tutarlılık, doğruluk değildir.
+
+### 10.2 Hangi test tipi yakalardı
+
+| Bulgu | Yakalayacak test tipi | Neden mevcut testler kaçırdı |
+|---|---|---|
+| **a** `kind` eksik | **Artefakt şema kontrolü** — serialize edilmiş *metne* karşı, *her* kayıt için zorunlu alan | Round-trip simetrikti (10.1b) |
+| **b** Column→Table yok | **Graph invariant'ı** — her `Column` node'unun tam olarak bir `MapsTo` kenarı var | Kimse popülasyon üzerinde iddia kurmuyordu |
+| **c** orphan endpoint | **Popülasyon invariant'ı + gerekçe zorunluluğu** — her `Endpoint` ya ≥1 giden kenar taşır ya da açık bir diagnostic | Örneklem 4 endpoint'i içermiyordu |
+| **5.8** outbox erişilemiyor | **Diferansiyel test (oracle)** — bağımsız bir gerçeklik kaynağıyla karşılaştırma | Graph tutarlıydı; içeriden görünmez |
+| **F1–F5** (validation) | Aynı: oracle | Aynı |
+
+**Ayrım net:** üç bulgu **iç tutarlılık** hatasıydı ve ucuz, deterministik invariant'larla yakalanır.
+Biri (5.8 — ve doğrulamadaki beşinin tamamı) **kapsam** hatasıydı: "interceptor diye bir yazma yolu
+olduğunu hiç bilmiyorduk." Bunu hiçbir invariant bulamaz; yalnız **dışarıdan bir gerçeklik kaynağı**
+bulur.
+
+Faz 5 bu ikisini karıştırmamalı. Biri gate'tir, diğeri eval.
+
+### 10.3 Faz 5 eval set tasarımı
+
+Roadmap 5b bugünkü haliyle "20 soru, elle cevap, recall/precision" diyor. Bu tasarım **5.8'i ve
+F1–F5'i yakalardı** (oracle var), ama **a/b/c'yi kaçırırdı** — 20 örnek, 400 node'luk popülasyonu
+temsil etmez ve eval yalnız nihai cevaba bakar. Dolayısıyla eval set **iki katmanlı** olmalı:
+
+**Katman A — invariant taraması.** Popülasyonun tamamı, her koşuda, milisaniyeler. Eval değil,
+**gate**. Detayı 10.4'te.
+
+**Katman B — oracle eval'i.** Örneklem, pahalı, elle veya çalışma zamanından. Roadmap'in 20 sorusu.
+
+Katman B için altı tasarım kuralı — hepsi ölçümden çıktı, tahminden değil:
+
+**1. Gerçeklik graph.json'dan okunmayacak.** Bu, aracı kendi çıktısıyla doğrulamak olur. İki
+bağımsız kaynak: (a) kaynağın elle okunması — `phase3-validation.md` bunun bir şablonu; (b)
+**çalışma zamanı SQL izi**: ModularCommerce'in kendi integration testleri gerçek Postgres'e karşı
+koşarken bir `DbCommandInterceptor` her istek için dokunulan tabloları kaydeder. (b) mekanikleştirilebilir
+ve tekrarlanabilir; (a) ölçek vermez ama (b)'nin kapsamadığı yolları (hata dalları, dev endpoint'leri) kapatır.
+
+**2. Her soru bir "boş küme" ikizi taşıyacak.** *"X hangi tablolara yazar"* sorusunun yanına, doğru
+cevabı **boş veya minimal** olan bir vaka: `GET /api/catalog/products` → 0 kolon, `GET /` → hiçbir şey.
+Sessiz yanlışı ancak bu çevirir teste: 3 dev endpoint'i bu kural yakalardı, çünkü beklenen cevapları
+boş **değildi** ama araç boş dönüyordu. **Recall'ı ölçmenin tek yolu, cevabı bilinen bir doluluk aramaktır.**
+
+**3. Recall INSERT/UPDATE ayrı raporlanacak.** Doğrulama ölçtü: UPDATE yollarında kolon recall'ı
+%90, INSERT yollarında %60. Tek bir toplam sayı (%70) bu ayrımı gizler ve yanlış yere iyileştirme
+yaptırır.
+
+**4. Kategoriler ölçümden gelecek, tahminden değil.** Roadmap dört kategori öngörmüştü: reflection,
+dynamic dispatch, string-based SQL, ambiguous interface. **Doğrulanan üç endpoint bunların hiçbirine
+denk gelmedi.** Gerçekte çıkanlar: `ef-side-effect`, `ef-implicit-read`, `ef-unnamed-column`,
+`inherited-initializer`, `non-relational-store` (tanımları `phase3-validation.md`'de). Beşi de
+*"kaynakta bir şey var ama sözdiziminde işaret edilecek yer yok"* ailesinden; roadmap'in dördü ise
+*"sözdizimi var ama çözülemiyor"* ailesinden. **İkisi ayrı problem; eval set ikisini de sormalı** —
+yoksa yalnız beklenen hata sınıfı ölçülür.
+
+**5. Sonuçlar `mechanism` başına kırılacak.** Her veri kenarı zaten mekanizma taşıyor (karar C).
+`EfModelMapping` 99, `EntityConstructorAssignment` 67, `PropertyAssignment` 52, `DbSetProperty` 47…
+Precision/recall mekanizma başına kırılabilir. **Hacmi yüksek ama doğruluğu ölçülmemiş bir mekanizma,
+bir sonraki bakılacak yerdir** — bu, eval'i sıralı bir iş listesine çevirir.
+
+**6. "Bilmiyorum" ayrı puanlanacak.** Üç sonuç ayrılmalı: doğru / yanlış / **açıkça işaretlenmiş
+belirsiz** (`Ambiguous`, `Truncated`, diagnostics). Sessizce kaçıran araçla sınırını bildiren araç
+aynı puanı alırsa, araç sessiz kalmaya teşvik edilmiş olur — bu projede bugüne kadar bulunan her
+ciddi hatanın tam olarak o davranış olduğu düşünülürse, metriğin bunu ödüllendirmesi gerekir.
+
+**7. Eval set'in kendisi test edilecek — hazır meta-test.**
+
+> **Eval set, `phase3-validation.md`'deki F1–F10'u yeniden bulmalı. Bulmuyorsa hata araçta
+> değil, eval set'tedir.**
+
+Bu, eval set için elde hazır duran bir doğrulama koşumu: on farkın her biri elle kanıtlanmış,
+`file:line` ile konumlanmış ve kategorize edilmiş. Yeni yazılan bir eval set'i bunlara karşı
+koşmak, "sorular doğru şeyi ölçüyor mu"yu araç değişmeden ölçer.
+
+| Bulunmalı | Nasıl bulunur (eval set'te ne olmalı) |
+|---|---|
+| F1 `cart.carts.Items` | Kolon düzeyi soru + jsonb owned koleksiyonu olan bir tablo |
+| F2 Redis | *"Bu akış hangi dış sistemlere yazıyor?"* — tablo sorusundan ayrı bir soru tipi |
+| F3 `Id` + gölge kolon | INSERT/UPDATE ayrı raporlama (kural 3) |
+| F4 owned navigasyon okuması | R/W ayrımı olan bir soru; yalnız "hangi tablolar" yetmez |
+| F5 outbox kolonları | Interceptor'lı bir modülde kolon düzeyi soru |
+| F6/F7 ham SQL | **EF dışı** bir modül (Discovery) örneklemde olmalı — yoksa kategori hiç ölçülmez |
+| F8 kök tipi | Cevabı bir arka plan işi veya consumer olan bir backward sorusu |
+| F9 kolon okuyucusu | *"Bu kolonu kim okuyor?"* — yazma sorusundan ayrı |
+| F10 backward sunumu | Backward çıktısı ayrıca insan tarafından okunmalı, yalnız küme karşılaştırılmamalı |
+
+Sağ sütun aslında **eval set'in tasarım şartnamesi**: her satır, olmazsa bir hata sınıfının
+görünmez kalacağı bir soru tipi. F6 satırı en kritiği — ilk üç endpoint'in hepsi EF akışıydı ve
+o seçim, roadmap'in dört kategorisinden ikisini ölçülemez kılmıştı (§10.3 kural 4).
+
+### 10.4 Build sonrası invariant kontrolü — evet, iki seviyeli
+
+**Cevap: evet, otomatik koşmalı.** Gerekçe doğrudan denetimden: bu dosyayı **bir insan elle okuyarak**
+dört hata buldu. Bir insanın gözüyle tek geçişte bulunabilen şey, tek geçişlik bir kontrolle de
+bulunur — ve `build` zaten dosyanın tamamını elinde tutuyor. Maliyet 400 node / 841 kenar üzerinde
+tek geçiş: ölçülemeyecek kadar küçük, `build`'in 32 saniyesi yanında sıfır.
+
+Ama hepsi aynı sertlikte olamaz. `EfPreflight`'ın ayrımı burada da geçerli (sürüm uyuşmazlığı
+bloke eder, bayat build uyarır):
+
+**Bloke edici — `graph.json` diske yazılmaz.** Bunlar "graph bozuk" demektir; bozuk bir graph'ı
+teslim etmek, hiç teslim etmemekten kötüdür.
+- *(mevcut)* boş `filePath`, `line ≤ 0`, dangling kenar
+- her node ve kenarda `kind` alanı — serialize edilmiş **metin** üzerinde
+- her `Column`'un tam olarak bir `MapsTo → Table` kenarı
+- tekrar eden node id yok
+- her veri kenarında (`Reads`/`Writes`/`MapsTo`) `mechanism ≠ None`
+
+**Raporlayıcı — yazılır, ama çıktıda ADIYLA basılır.** Bunlar meşru olarak gerçekleşebilir, ama
+sessizce gerçekleşemez.
+- giden kenarı olmayan `Endpoint`'ler — **adları tek tek**
+- hiçbir `Reads`/`Writes` kenarı almayan `Table`'lar
+- hiçbir endpoint'ten erişilemeyen `Table`'lar
+
+**Tasarımın tek kuralı:**
+
+> **Meşru olarak ihlal edilebilen bir invariant, çıktıda ADI GEÇEN bir istisna üretmeli — sessizlik değil.**
+
+`GET /`'in orphan olması doğru. Ama `build`'in *"1 orphan endpoint: GET /"* diye basması şart:
+o satır 4'e çıktığı gün birileri görür. Denetimin bulduğu şeyi bulan aslında bu satırın yokluğuydu.
+
+**Nerede koşacak:** invariant seti **kod** olmalı, dokümandaki bir kontrol listesi değil — tek
+implementasyon, iki çağıran: (1) `Phase3Commands.BuildAsync` sonunda, `GraphJson.Write`'tan **önce**
+(bloke ediciler için `GraphJson.Validate`'in doğal genişlemesi); (2) gerçek hedefin graph'ı üzerinde
+koşan bir test. Katman A eval'i de aynı kodu çağırır — üç tüketici, tek gerçek.
+
+**Bu, testlerin yerini almaz.** İç tutarlılığı garanti eder, doğruluğu değil (10.2). Kapsam
+hataları yalnız Katman B'den çıkar.

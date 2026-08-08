@@ -84,6 +84,12 @@ internal sealed class DataLayerOverlay(
 
             var access = _entityAccess.Analyze(body, semanticModel, solutionDirectory, cancellationToken);
 
+            // Columns this body names outright. Collected so the row-level rule below can stay out
+            // of their way: "Status = next at Order.cs:166" is a strictly better claim than "the
+            // row was written", and only one edge per column should carry the answer.
+            var named = new HashSet<string>(StringComparer.Ordinal);
+            var wholeRows = new List<EntityAccess>();
+
             foreach (var context in access.SaveChangesContexts)
             {
                 foreach (var entity in InterceptorWrites(context, cancellationToken))
@@ -99,7 +105,12 @@ internal sealed class DataLayerOverlay(
                 if (entry.Mechanism == EdgeMechanism.EntityConstruction)
                 {
                     await AddConstructorColumnWritesAsync(
-                        nodeId, entry.EntityClrTypeName, nodes, edges, seenEdges, cancellationToken);
+                        nodeId, entry.EntityClrTypeName, nodes, edges, seenEdges, named, cancellationToken);
+                }
+
+                if (entry.WritesWholeRow)
+                {
+                    wholeRows.Add(entry);
                 }
             }
 
@@ -110,12 +121,146 @@ internal sealed class DataLayerOverlay(
 
             foreach (var column in writes.Columns)
             {
-                AddColumnWrite(nodeId, column, nodes, edges, seenEdges, cancellationToken);
+                AddColumnWrite(nodeId, column, nodes, edges, seenEdges, named, cancellationToken);
+            }
+
+            // Last, so every precisely named column is already known.
+            foreach (var entry in wholeRows)
+            {
+                AddRowColumnWrites(nodeId, entry, nodes, edges, seenEdges, named, cancellationToken);
             }
 
             diagnostics.AddRange(writes.UnmappedWrites.Select(w =>
                 $"property written but not mapped to a column: {w}"));
         }
+    }
+
+    /// <summary>
+    /// Every remaining column of a row the statement writes in full.
+    /// <para>
+    /// Column writes are otherwise derived from assignments, which measures an UPDATE correctly and
+    /// an INSERT badly: EF's INSERT lists every mapped column whether or not C# named it. The gap is
+    /// not random - it is precisely the columns no statement can name. Measured before this rule:
+    /// <c>identity.users.Id</c> (initialised on the <c>Entity</c> base type, so absent from every
+    /// derived constructor), the shadow keys and foreign keys of owned tables, and
+    /// <c>cart.carts.Items</c>. Not one <c>.Id</c> column existed anywhere in the graph.
+    /// </para>
+    /// <para>
+    /// Row versions are excluded: <c>xmin</c> is written by Postgres, not by the INSERT.
+    /// </para>
+    /// <para>
+    /// Columns some assignment already named keep their precise edge and are skipped here, so this
+    /// mechanism marks exactly the claims that rest on "the row was written" and nothing more.
+    /// </para>
+    /// </summary>
+    private void AddRowColumnWrites(
+        string fromId,
+        EntityAccess access,
+        Dictionary<string, Node> nodes,
+        List<Edge> edges,
+        HashSet<(string, string, EdgeKind, EdgeMechanism)> seen,
+        HashSet<string> named,
+        CancellationToken cancellationToken)
+    {
+        var symbol = ResolveEntitySymbol(access.EntityClrTypeName, cancellationToken);
+        if (symbol is null)
+        {
+            return;
+        }
+
+        var (entityFile, entityLine) = SourceLocation.For(symbol, solutionDirectory);
+        if (entityLine <= 0)
+        {
+            return;
+        }
+
+        foreach (var mapping in model.FindEntity(access.EntityClrTypeName))
+        {
+            if (mapping.Entity.QualifiedTableName is not { } table)
+            {
+                // Owned types folded into the owner's table or into a JSON column own no row.
+                continue;
+            }
+
+            foreach (var property in mapping.Entity.Properties)
+            {
+                if (property.ColumnName is not { } column || property.IsRowVersion)
+                {
+                    continue;
+                }
+
+                var columnId = NodeId.ForColumn(table, column);
+                if (!named.Add(columnId))
+                {
+                    continue;
+                }
+
+                // Shadow columns have no C# member, so they fall back to the entity declaration -
+                // the file you would open to understand why the column exists. Coarser than a
+                // property's own line, but a real location, which is what the invariant requires.
+                var (file, line) = LocateMember(symbol, property) ?? (entityFile, entityLine);
+
+                if (!nodes.ContainsKey(columnId))
+                {
+                    nodes[columnId] = new Node(
+                        columnId,
+                        NodeKind.Column,
+                        $"{table}.{column}",
+                        ModuleOfTable(table, mapping),
+                        file,
+                        line);
+                }
+
+                Add(edges, seen, new Edge(
+                    fromId, columnId, EdgeKind.Writes,
+                    $"whole row written: {access.Evidence}",
+                    Mechanism: EdgeMechanism.RowInsert));
+
+                Add(edges, seen, new Edge(
+                    columnId, NodeId.ForTable(table), EdgeKind.MapsTo,
+                    $"EF Core model: {access.EntityClrTypeName}.{property.Name} -> {table}",
+                    Mechanism: EdgeMechanism.EfModelMapping));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Where the C# member behind a column is declared, walking base types.
+    /// <para>
+    /// Walking up matters: <c>Id</c> is declared once on <c>Shared.Kernel.Entity</c> and inherited
+    /// by every aggregate, so looking only at the entity itself finds nothing for the one column
+    /// every table has. Complex members are tried under the entity's own name first
+    /// (<c>Product.Price</c>) and the value object's second (<c>Money.Amount</c>).
+    /// </para>
+    /// </summary>
+    private (string FilePath, int Line)? LocateMember(INamedTypeSymbol entity, EfProperty property)
+    {
+        foreach (var candidate in new[] { property.ComplexPropertyName, property.Name })
+        {
+            if (candidate is null)
+            {
+                continue;
+            }
+
+            for (var type = entity; type is not null; type = type.BaseType)
+            {
+                foreach (var member in type.GetMembers(candidate))
+                {
+                    if (member is not (IPropertySymbol or IFieldSymbol))
+                    {
+                        continue;
+                    }
+
+                    var (file, line) = SourceLocation.For(member, solutionDirectory);
+                    if (line > 0)
+                    {
+                        return (file, line);
+                    }
+                }
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -139,6 +284,7 @@ internal sealed class DataLayerOverlay(
         Dictionary<string, Node> nodes,
         List<Edge> edges,
         HashSet<(string, string, EdgeKind, EdgeMechanism)> seen,
+        HashSet<string> named,
         CancellationToken cancellationToken)
     {
         var symbol = ResolveEntitySymbol(entityClrTypeName, cancellationToken);
@@ -164,7 +310,7 @@ internal sealed class DataLayerOverlay(
 
                 foreach (var column in writes.Columns)
                 {
-                    AddColumnWrite(fromId, column, nodes, edges, seen, cancellationToken);
+                    AddColumnWrite(fromId, column, nodes, edges, seen, named, cancellationToken);
                 }
             }
         }
@@ -326,6 +472,7 @@ internal sealed class DataLayerOverlay(
         Dictionary<string, Node> nodes,
         List<Edge> edges,
         HashSet<(string, string, EdgeKind, EdgeMechanism)> seen,
+        HashSet<string> named,
         CancellationToken cancellationToken)
     {
         var mappings = model.FindEntity(write.EntityClrTypeName);
@@ -353,6 +500,8 @@ internal sealed class DataLayerOverlay(
 
         var tableId = NodeId.ForTable(write.QualifiedTableName);
         var columnId = NodeId.ForColumn(write.QualifiedTableName, write.ColumnName);
+
+        named.Add(columnId);
 
         if (!nodes.ContainsKey(columnId))
         {

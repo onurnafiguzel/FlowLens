@@ -294,9 +294,88 @@ public sealed class Phase3IntegrationTests(Phase3Fixture fixture)
     [Fact]
     public void HostedServicesAndConsumersAreRootsToo()
     {
-        Assert.Contains(fixture.Build.Roots, r => r.Kind == "HostedService");
-        Assert.Contains(fixture.Build.Roots, r => r.Kind == "Consumer");
-        Assert.Contains(fixture.Build.Roots, r => r.Kind == "Endpoint");
+        Assert.Contains(fixture.Build.Roots, r => r.Kind == RootKind.BackgroundService);
+        Assert.Contains(fixture.Build.Roots, r => r.Kind == RootKind.Consumer);
+        Assert.Contains(fixture.Build.Roots, r => r.Kind == RootKind.Endpoint);
+    }
+
+    /// <summary>
+    /// Knowing that 32 roots exist is not the same as knowing WHICH nodes they are. Backward's
+    /// answer is a list of entry points, so every root must be identifiable from the graph alone -
+    /// otherwise a consumer has to re-derive them, and a background job reads as an ordinary method.
+    /// </summary>
+    [Fact]
+    public void EveryRootNodeCarriesItsRootKind()
+    {
+        var byId = fixture.Build.Document.Nodes.ToDictionary(n => n.Id, StringComparer.Ordinal);
+
+        Assert.All(fixture.Build.Roots, root =>
+        {
+            Assert.True(byId.ContainsKey(root.Id), $"root {root.Id} has no node");
+            Assert.Equal(root.Kind, byId[root.Id].RootKind);
+        });
+
+        // And nothing else claims to be one.
+        Assert.Equal(
+            fixture.Build.Roots.Count,
+            fixture.Build.Document.Nodes.Count(n => n.RootKind != RootKind.None));
+    }
+
+    /// <summary>
+    /// The measured case behind RootKind: the TTL sweeper reads ordering.orders through
+    /// OrderReservationReconciler, so "who writes this table" is four endpoints AND a background
+    /// job. Anchored on the table and the kind, never on a count.
+    /// </summary>
+    [Fact]
+    public void BackwardFromOrdersFindsBothEndpointsAndABackgroundJob()
+    {
+        var roots = fixture.Build.Graph
+            .BackwardSubgraph(NodeId.ForTable("ordering.orders"), new TraversalQuery())
+            .Nodes
+            .Where(n => n.RootKind != RootKind.None)
+            .ToList();
+
+        Assert.Contains(roots, n => n.RootKind == RootKind.Endpoint);
+        Assert.Contains(roots, n => n.RootKind == RootKind.BackgroundService);
+    }
+
+    /// <summary>
+    /// An INSERT writes every mapped column, including the ones no C# statement names.
+    /// <para>
+    /// Three shapes, all measured missing before the row-level rule existed and all with a real
+    /// source location once found: a surrogate key initialised on a base type in another assembly,
+    /// a JSON container column that is a navigation rather than a property, and the shadow key and
+    /// foreign key EF invents for an owned collection's table.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("identity.users", "Id", "Shared.Kernel")]
+    [InlineData("cart.carts", "Items", "CartRecord.cs")]
+    [InlineData("ordering.order_lines", "order_id", "OrderLine.cs")]
+    [InlineData("payment.payment_attempts", "id", "PaymentAttempt.cs")]
+    public void ColumnsNoAssignmentNamesAreStillReachedOnAnInsert(string table, string column, string locatedIn)
+    {
+        var node = fixture.Build.Graph.Find(NodeId.ForColumn(table, column));
+
+        Assert.NotNull(node);
+        Assert.Contains(locatedIn, node.FilePath, StringComparison.Ordinal);
+        Assert.True(node.Line > 0);
+    }
+
+    /// <summary>
+    /// The row-level rule must fire on inserts only. A read reaching a table and then claiming its
+    /// columns is exactly the failure §5.3 removed, and this rule could reintroduce it from the
+    /// other side.
+    /// </summary>
+    [Fact]
+    public void AnInsertClaimsEveryColumnButAnUpdateStillClaimsOnlyTheOnesItAssigns()
+    {
+        // Cancel updates the order and inserts a status-history row: two shapes, one flow.
+        var reached = Forward("endpoint:POST /api/ordering/orders/{id:guid}/cancel");
+
+        Assert.Contains(NodeId.ForColumn("ordering.order_status_history", "order_id"), reached);
+        Assert.DoesNotContain(NodeId.ForColumn("ordering.orders", "IdempotencyKey"), reached);
+        Assert.DoesNotContain(NodeId.ForColumn("ordering.orders", "CreatedAtUtc"), reached);
     }
 
     /// <summary>The written graph must satisfy the same invariants the writer enforces.</summary>

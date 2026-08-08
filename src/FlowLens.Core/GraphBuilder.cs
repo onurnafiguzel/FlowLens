@@ -5,8 +5,8 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace FlowLens.Core;
 
-/// <param name="Kind">Endpoint, Consumer or HostedService - reported so coverage is auditable.</param>
-public sealed record GraphRoot(string Kind, string Id, string DisplayName);
+/// <param name="Kind">Endpoint, Consumer or BackgroundService - reported so coverage is auditable.</param>
+public sealed record GraphRoot(RootKind Kind, string Id, string DisplayName);
 
 public sealed record GraphBuildResult(
     CodeGraph Graph,
@@ -97,14 +97,14 @@ public static class GraphBuilder
         foreach (var endpoint in discovery.Endpoints)
         {
             walk = await walker.WalkAsync(endpoint, cancellationToken);
-            roots.Add(new GraphRoot("Endpoint", endpoint.Id, $"{endpoint.HttpMethod} {endpoint.Route}"));
+            roots.Add(new GraphRoot(RootKind.Endpoint, endpoint.Id, $"{endpoint.HttpMethod} {endpoint.Route}"));
         }
 
         foreach (var registration in consumers.AllRegistrations.DistinctBy(r => NodeId.ForMethod(r.ConsumeMethod)))
         {
             walk = await WalkMethodAsync(walker, registration.ConsumeMethod, solutionDirectory, cancellationToken);
             roots.Add(new GraphRoot(
-                "Consumer",
+                RootKind.Consumer,
                 NodeId.ForMethod(registration.ConsumeMethod),
                 NodeId.DisplayName(registration.ConsumeMethod)));
         }
@@ -112,7 +112,8 @@ public static class GraphBuilder
         foreach (var entry in await FindHostedServiceEntryPointsAsync(projects, cancellationToken))
         {
             walk = await WalkMethodAsync(walker, entry, solutionDirectory, cancellationToken);
-            roots.Add(new GraphRoot("HostedService", NodeId.ForMethod(entry), NodeId.DisplayName(entry)));
+            roots.Add(new GraphRoot(
+                RootKind.BackgroundService, NodeId.ForMethod(entry), NodeId.DisplayName(entry)));
         }
 
         if (walk is null)
@@ -123,6 +124,18 @@ public static class GraphBuilder
 
         var nodes = walk.Nodes.ToDictionary(n => n.Id, StringComparer.Ordinal);
         var edges = new List<Edge>(walk.Edges);
+
+        // Stamped after the walk rather than at node creation: the walker builds every node the
+        // same way and does not know which ones a root loop started from. Without this the graph
+        // records that 32 roots exist but not WHICH nodes they are, so a backward answer cannot
+        // tell an endpoint from a background job.
+        foreach (var root in roots)
+        {
+            if (nodes.TryGetValue(root.Id, out var node))
+            {
+                nodes[root.Id] = node with { RootKind = root.Kind };
+            }
+        }
 
         // Endpoint lambdas keyed by their node id, so the overlay can analyse the ones that reach
         // the database without going through a handler.

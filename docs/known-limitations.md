@@ -432,6 +432,17 @@ Kolon yazmaları `AssignmentExpressionSyntax` / `++` / `SetProperty` üzerinden 
 
 5 ve 6, tablo düzeyinde **kayıp değil** — ilgili tablolar başka sinyallerle graph'ta.
 
+> **Faz 3 doğrulaması (`phase3-validation.md`) 2 ve 5'i yeniden sınıflandırdı.** İkisi de "yapısal"
+> yazılmıştı; gerekçe *"kaynakta C# üyesi yok, dolayısıyla `filePath`/`line` de yok"* idi. Ölçüm bu
+> gerekçeyi çürüttü: **konum var, sadece CLR üyesinde değil konfigürasyon sitesinde.** `order_id`
+> için `OrderConfiguration.cs:32` (`HasForeignKey("order_id")`), sentetik `id` için `:33`,
+> `cart.carts.Items` için `CartConfiguration.cs:18` (`OwnsMany(...).ToJson()`). Üçü de gerçek,
+> tıklanabilir konumlar. Dolayısıyla ikisi de **düzeltilebilir**; ayrıntı ve maliyet L16'da.
+
+**L13'ün kapsamadığı ölçülmüş kayıp:** `Id` — `Shared.Kernel.Entity.cs:7`'de bir *property
+initializer* (`= Guid.NewGuid()`), constructor gövdesi ataması değil ve türetilmiş tipin üyesi
+değil. Graph'ta **`.Id` ile biten tek bir kolon node'u yok** (82'nin hiçbiri). Bkz. L16.
+
 > **L2 güncellemesi:** L2'nin `AccessorDeclarationSyntax` endişesi Faz 3'te **konusuz kaldı.**
 > `DbSet` erişimi ifadenin *tipinden* çözülüyor, accessor'ın şeklinden değil — dolayısıyla
 > `DbSet<Order> Orders => Set<Order>()` ile `DbSet<Order> Orders { get; set; }` birebir aynı
@@ -511,6 +522,159 @@ eklenirse kesinleşebilir.
 
 ---
 
+## L16 — Kolon kümesi ATAMA'dan üretiliyordu ✅ BÜYÜK ÖLÇÜDE KAPANDI (Faz 3 sonu)
+
+**Durum:** 1, 2, 3 **kapandı**; 4 (outbox kolonları) ertelendi, 5 ayrı madde olarak açık.
+**Keşfedildiği yer:** Faz 3 doğrulaması (`phase3-validation.md`, dört endpoint elle karşılaştırıldı).
+
+> **Kapanış (`phase3-validation.md` §8):** `EfProbe` artık JSON kapsayıcı kolonunu üretiyor ve
+> `DataLayerOverlay` satır düzeyi kuralı uyguluyor (`mechanism: RowInsert`, 109 kenar).
+> Kolon recall %66 → **%83**, INSERT yollarında %60 → **%84**, precision **%100** kaldı.
+> `identity.users.Id` artık `Shared.Kernel/Entity.cs:7`'de, gölge `order_id`/`payment_id` kendi
+> entity'lerinin bildiriminde, `cart.carts.Items` `CartRecord.cs:5`'te.
+>
+> **Açık kalan:** madde 4 — outbox satırının kolonları. Düzeltmesi kök kümesini ilgilendirdiği için
+> ayrıca karara bağlandı (`phase-3-notes.md` §5.9, seçilen B). Madde 5 → L19.
+
+Dört endpoint elle takip edildi. **Yanlış pozitif sıfır**; tüm sapma eksiklik yönündeydi.
+Kaçırmaların hepsi tek bir cümleye iniyordu:
+
+> Kolon yazmaları `AssignmentExpressionSyntax`'ten üretiliyor. `UPDATE` için bu **doğru** ölçüdür.
+> `INSERT` içinse EF entity'nin **tüm eşlenmiş kolonlarını** yazar — atansın atanmasın.
+
+| # | Kayıp | Konum kaynağı | Kategori | Durum |
+|---|---|---|---|---|
+| 1 | `cart.carts.Items` (jsonb kapsayıcı) | `CartRecord.cs:5` (navigasyon) | `ef-unnamed-column` | ✅ kapandı |
+| 2 | `<entity>.Id` — hiçbir tabloda yoktu | `Shared.Kernel/Entity.cs:7` | `inherited-initializer` | ✅ kapandı |
+| 3 | Gölge anahtar/FK (`order_id`, `payment_id`, `id`) | entity bildirimi | `ef-unnamed-column` | ✅ kapandı |
+| 4 | Outbox satırının kolonları (`Type`, `Content`, `OccurredOnUtc`, `Id`) | `DomainEventToOutboxInterceptor.cs:59-64` | `ef-side-effect` | **açık** |
+| 5 | `ordering.order_lines` **okuması** (owned auto-include) | `OrderConfiguration.cs:29` | `ef-implicit-read` | **açık → L19** |
+
+### Uygulanan kural
+
+`EntityAccess.WritesWholeRow`, şu durumlarda true: `Add`/`AddAsync`/`AddRange`/`AddRangeAsync`
+(INSERT tüm kolonları listeler), `Update`/`UpdateRange` (EF her property'yi Modified işaretler),
+ve mapped bir entity'nin inşası. `DataLayerOverlay` o tablonun **kalan** kolonlarına
+`mechanism: RowInsert` ile W kenarı üretiyor.
+
+Üç sınır, hepsi bilinçli:
+
+- **`IsRowVersion` hariç.** `xmin`'i INSERT değil Postgres yazar.
+- **Atamayla adlandırılan kolon kendi kesin kenarını korur.** `RowInsert` yalnız *"satır yazıldı,
+  dolayısıyla bu kolon da"* iddialarını işaretler — ayrı sayılabilir, ayrı ölçülebilir.
+- **Gölge kolonun konumu entity bildirimi.** Uydurma değil: açacağın dosya o. Miras alınan üyeler
+  için base tipler yukarı doğru geziliyor, `Id` bu sayede `Entity.cs:7`'de bulunuyor.
+
+**Precision düşmedi (%100).** Üç kanarya: `GET /api/catalog/products` 0 kolon; checkout'ta
+`cart.carts` kolonsuz (`Remove` tüm satırı yazmaz); cancel'da `ordering.orders` yalnız 2 kolon
+(UPDATE) ama aynı gövdede `order_status_history` 6 kolon (INSERT). Kural iki şekli tek gövdede
+ayırt ediyor.
+
+> **Bir isim geri geldi:** checkout artık `payment.payments.RefundedAtUtc`'yi de yazıyor gösteriyor.
+> §5.3'te bu bir **hataydı** — okuma, `Table → Column` kenarı üzerinden yazma gibi görünüyordu.
+> Şimdi checkout o tabloya gerçekten **satır ekliyor** ve INSERT cümlesi kolonu listeliyor (NULL
+> olarak); kolon düşerse checkout kırılır. Aynı isim, farklı iddia — ve `mechanism: RowInsert`
+> olduğu için ikisi çıktıdan ayırt edilebiliyor.
+
+**4 neden açık kaldı:** düzeltmesi interceptor gövdesinin analiz edilmesini gerektiriyor, bu da kök
+kümesine dokunma riski taşıyor. Karar ayrıca verildi (`phase-3-notes.md` §5.9, seçilen **B**:
+gövde analiz edilir ama yürünmez, sonuç `SaveChanges` çağrı sitesine iliştirilir). Uygulanması
+Faz 4/5 önceliği.
+
+**Faz 5 eval set'i bunları yeniden bulmalı** — kapananları regresyon olarak, açık kalanları kayıp
+olarak. Bulmuyorsa hata eval set'tedir.
+
+---
+
+## L17 — İlişkisel olmayan depolar ontolojide yok
+
+**Durum:** Açık, **ontoloji kararı** — kod düzeltmesi değil, kapsam kararı gerektirir.
+**Keşfedildiği yer:** Faz 3 doğrulaması, `PUT /api/cart/items/{productId}`.
+
+`ExternalCall` tespiti bugün yalnız `HttpClient` çağrılarına bakıyor (`HttpClientInvocation`,
+graph'ta 1 node). `RedisCartCache` her sepet yazmasında Redis'e **ikinci bir kalıcı kopya** yazıyor
+(`StringSetAsync`, TTL 7 gün) ama hiçbir node tipiyle temsil edilmiyor.
+
+Kanıt kaybolmuş değil — `RedisCartCache.SetAsync` traversal'da `Method` olarak görünüyor — ama
+**tiplenmemiş**: *"bu akış hangi dış depolara yazıyor?"* sorusuna cevap vermiyor. Aynısı
+RabbitMQ/MassTransit broker'ı için de geçerli (olay yayını `Event` node'uyla modellendi, broker'ın
+kendisiyle değil).
+
+Faz 2'de `ExternalCall`'un tanımı HTTP üzerinden yapılmıştı; bu, o kararın faturası. Genişletme
+roadmap §5'in *"genişletme isteği gelirse önce sor"* kuralına tabi — **karar verilmedi, kaydedildi.**
+
+---
+
+## L18 — Backward traversal'ın sunum sınırları (1 kapandı, 2 açık)
+
+**Durum:** 1 **kapandı**; 2 ve 3 açık. Doğruluk sorunu **değil** — üç backward sorgusunda recall
+ve precision %100.
+**Keşfedildiği yer:** Faz 3 doğrulaması (`phase3-validation.md` §5).
+**Önemi:** Faz 5a triage bot'unun **tamamı** backward'a dayanıyor.
+
+**1. Kök tipleri ayrışmıyordu. ✅ KAPANDI (Faz 3 sonu).**
+Faz 2'de kök kümesi *Endpoint + Consumer + BackgroundService* olarak karara bağlanmıştı, ama
+`NodeKind`'da yalnız `Endpoint` vardı; consumer ve arka plan işleri `Method` olarak duruyordu.
+`Backward("table:ordering.orders")` cevabı **"4 endpoint"** gibi okunuyordu; doğrusu
+**"4 endpoint + 1 arka plan işi"** — `ReservationTtlSweeper`, `OrderReservationReconciler.cs:20`
+üzerinden `orders`'ı gerçekten okuyor ve `Method (11)` listesinde gömülüydü.
+
+> **Çözüm ontolojiyi büyütmedi.** `NodeKind`'a değer eklemek yerine `Node`'a ayrı bir `RootKind`
+> alanı (`None | Endpoint | Consumer | BackgroundService`): kök olmak bir düğüm *tipi* değil,
+> düğümün graph'taki *rolü* — aynı metot hem kök hem başka bir akışın ara düğümü olabilir.
+> Roadmap §5'in "ontoloji az tutulur" kuralı korundu; dokuz `NodeKind` değeri aynen duruyor.
+>
+> Alan `None` değerinde de **yazılıyor** — §5.7a'nın dersi: varsayılanında kaybolan alan, her
+> tüketicinin bilmesi gereken yazılı olmayan bir kural üretir.
+>
+> Backward çıktısı artık kökleri **en başta ve kategoriye göre** basıyor:
+> `Entry points (5): 4 endpoints + 1 background job`. Kök yoksa bunu da söylüyor — *"nothing
+> reaches this from an endpoint, consumer or background job"* — çünkü sessiz boş küme bu projede
+> bulunan her ciddi hatanın biçimi.
+>
+> İki test popülasyon üzerinde sabitliyor: her kök `RootKind` taşır **ve** başka hiçbir node
+> taşımaz (32/415), ve `ordering.orders`'ın backward'ı hem endpoint hem background job içerir.
+
+**2. Kolon backward'ı yalnız "kim yazıyor"u cevaplar.**
+Column node'ları yalnız bir **yazma** onları adlandırdığında üretiliyor (§5.7b tasarım kararı).
+`OrderReservationReconciler` `Where(o => o.Status == OrderStatus.Paid)` ile `ordering.orders.Status`
+kolonunu okuyor; bu okuma kolon düzeyinde temsil edilmiyor. *"Bu kolonu kim okuyor?"* sorusunun
+cevabı **boş gelir** — ve boş cevap, bu projede bulunan her ciddi hatanın biçimi.
+**Bilinçli sınır olarak burada kaydedildi**; çıktıda ayrıca belirtilmesi Faz 4 işi.
+
+**3. Backward çıktısındaki "Data layer" bloğu iki anlamlı.**
+Forward'da blok *"bu akış neye dokunuyor"* demek. Backward'da aynı blok **hedefin kendi kolon
+kümesini** basıyor (Column→Table kenarları ters yönde geziliyor):
+`Backward("table:ordering.orders")` sonunda *"WR ordering.orders — 5 kolon"* çıkıyor.
+Kozmetik, ama Faz 4'te LLM'e giden metin bu.
+
+---
+
+## L19 — Owned navigasyon okuması READS kenarı üretmiyor
+
+**Durum:** Açık, ölçüldü, **düzeltilebilir** — Faz 3 sonunda bilerek ertelendi.
+**Keşfedildiği yer:** Faz 3 doğrulaması, `POST /api/ordering/orders/{id}/cancel` (F4).
+
+READS kenarları `context.<DbSet>` erişiminden ve sorgu zincirlerinden üretiliyor. Bir **owned
+navigasyon** okumasının sözdiziminde `DbSet` yok — `foreach (var line in order.Lines)` — ama EF
+owned koleksiyonları **auto-include** ettiği için SQL'de tablo var. Ortada `context.OrderLines`
+diye bir ifade yok, çünkü öyle bir `DbSet` de yok.
+
+**Ölçülen etki:** cancel akışı `ordering.order_lines`'ı gerçekten okuyor
+(`CancelOrderHandler.cs:46`, `OrderConfiguration.cs:29`) ama tablo listesinde yok — 8 tablodan 1'i.
+`ordering.order_status_history` de aynı sebeple okunuyor; o listede var ama **yalnız W olarak**,
+çünkü oraya yazma yolundan geliyor. Yani kayıp tek tablo değil, bir **kenar tipi**.
+
+**Düzeltme yolu:** EF sahiplik ilişkisini biliyor (`FindOwnership`, snapshot'ta zaten
+`OwnerClrTypeName` olarak var). Bir entity'ye READS kenarı üretildiğinde owned navigasyonlarının
+tablolarına da READS eklenebilir. Owned tiplerin auto-include'u EF garantisi, sezgisel tahmin
+değil — dolayısıyla bu birinci sınıf bir kenar olur.
+
+**Ertelendi çünkü:** L16'nın satır düzeyi kuralından bağımsız ve Faz 3 kabul kriterleri
+karşılanmış durumda. Faz 4/5 önceliği.
+
+---
+
 ## L6 — Statik analizin yapısal olarak göremedikleri
 
 **Durum:** Kalıcı sınır. Faz 5 eval setinde kategori olarak ölçülecek.
@@ -524,3 +688,29 @@ eklenirse kesinleşebilir.
 
 Bunlar çözülecek problemler değil, **ölçülecek** kayıplardır. Faz 5b'nin recall metriği tam
 olarak bu kategorileri sayacak.
+
+### Faz 3'te ölçüldü: string tabanlı SQL
+
+`POST /api/discovery/search` elle doğrulandı (`phase3-validation.md` §4). Sonuç:
+
+| | |
+|---|---|
+| Gerçekte okunan tablo | `discovery.product_embeddings` (`ProductVectorRepository.cs:53-58`, pgvector `<=>`) |
+| FlowLens'in raporladığı | **0 tablo, 0 kolon** — veri katmanı bloğu hiç basılmıyor |
+| Tablo recall | **%0 (0/1)** |
+
+Hedefteki dört ham SQL sitesinin **dördü de** diagnostics'te, `file:line` ile:
+`ProductVectorRepository.cs:26/:40/:60` ve `NaiveReservationStrategy.cs:37`. Yani kayıp gerçek
+ama **sessiz değil** — graph *"hiçbir tabloya dokunmuyor"* demiyor, *"burada bakamadım"* diyor.
+Denetimde bulunan dört hatadan farkı tam olarak bu.
+
+**İkinci etki — doğru cevap, yanlış kanıt.** `discovery.product_embeddings`'in **yazma** tarafı
+graph'ta var, ama `UpsertAsync`'in SQL'inden değil: `IndexProductHandler`'ın bir `ProductEmbedding`
+*inşa etmesinden* (`mechanism: EntityConstruction`, ikinci sınıf) ve entity'nin ayrıca EF'te de
+konfigüre edilmiş olmasından. Entity EF'te tanımlı olmasaydı tablo hiç görünmeyecekti.
+Faz 2 kararı C'nin ("kanıt taşı") uyardığı durumun birebir örneği — ve `mechanism` alanı sayesinde
+bu iddianın ikinci sınıf olduğu **çıktıdan okunabiliyor**.
+
+> **Bu, aracın kapsamının EF ile eşleştiğinin en net kanıtı.** Hedef reponun tamamıyla değil.
+> Bilinçli sınır: roadmap Faz 3 isim tahminini ve SQL parse'ı açıkça yasaklıyor, `IModel` şart
+> koşuyor.

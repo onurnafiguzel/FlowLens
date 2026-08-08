@@ -64,6 +64,23 @@ public static class Runner
             CliCommand.Build => "FlowLens - Phase 3 (graph build)",
             _ => "FlowLens - Phase 1 (Roslyn warm-up)",
         });
+
+        // Two commands are spelled "trace" and only one answers the question the tool exists for.
+        // Which one runs is decided by the argument - a solution path selects the Phase 2 live walk,
+        // which has no EF model and therefore no tables or columns. That has been misread as a bug
+        // twice, so the run says so itself rather than leaving it to the help text.
+        if (options.Command == CliCommand.Trace && !options.TracesGraphFile)
+        {
+            Console.WriteLine(
+                "      note: this is the live call-chain walk - NO tables or columns. For the data");
+            Console.WriteLine(
+                "            layer, build the graph once and trace that:");
+            Console.WriteLine(
+                $"              flowlens build {options.SolutionPath} -o graph.json");
+            Console.WriteLine(
+                $"              flowlens trace \"{options.EndpointSelector ?? "POST /api/..."}\"");
+        }
+
         Console.WriteLine();
 
         // Traversing a built graph needs no Roslyn and no MSBuild: it is a few dictionary lookups

@@ -61,6 +61,17 @@ public sealed class EntityAccessAnalyzerTests
 
             public Order Construct() => new Order();
 
+            public void RemoveViaDbSet(Order order) => context.Orders.Remove(order);
+
+            public void UpdateViaDbSet(Product product) => context.Products.Update(product);
+
+            // Remove first on purpose: whichever statement comes first must not decide the flag.
+            public void RemoveThenAdd(Order a, Order b)
+            {
+                context.Orders.Remove(a);
+                context.Orders.Add(b);
+            }
+
             public string Unrelated() => "nothing to do with the database";
         }
         """;
@@ -134,6 +145,45 @@ public sealed class EntityAccessAnalyzerTests
     public async Task ReportsNothingForAMethodThatNeverTouchesTheContext()
     {
         Assert.Empty(await AnalyzeAsync("Unrelated"));
+    }
+
+    /// <summary>
+    /// Which statements write the WHOLE row, which is what decides whether the column set comes
+    /// from the assignments or from the table.
+    /// <para>
+    /// An INSERT lists every mapped column and Update marks every property modified, so both write
+    /// columns no C# statement names. Remove and ExecuteDelete write none, and a query writes
+    /// nothing at all - the flag has to separate them or reading a table would start claiming its
+    /// columns, which is the bug §5.3 removed once already.
+    /// </para>
+    /// </summary>
+    [Theory]
+    [InlineData("AddViaDbSet", true)]
+    [InlineData("AddViaSetOfT", true)]
+    [InlineData("AddViaContext", true)]
+    [InlineData("UpdateViaDbSet", true)]
+    [InlineData("Construct", true)]
+    [InlineData("RemoveViaDbSet", false)]
+    [InlineData("DeleteViaChain", false)]
+    [InlineData("Read", false)]
+    public async Task MarksOnlyTheStatementsThatWriteEveryColumnOfTheRow(string method, bool wholeRow)
+    {
+        var accesses = await AnalyzeAsync(method);
+
+        Assert.Equal(wholeRow, accesses.Any(a => a.WritesWholeRow));
+    }
+
+    /// <summary>
+    /// The accesses list de-duplicates by (entity, kind, mechanism), so a Remove recorded before an
+    /// Add on the same DbSet would swallow the Add - and with it the fact that a row is inserted.
+    /// </summary>
+    [Fact]
+    public async Task AWholeRowWriteSurvivesAnEarlierPartialWriteOnTheSameDbSet()
+    {
+        var accesses = await AnalyzeAsync("RemoveThenAdd");
+
+        var write = Assert.Single(accesses, a => a.Kind == EdgeKind.Writes);
+        Assert.True(write.WritesWholeRow);
     }
 
     private static async Task<IReadOnlyList<EntityAccess>> AnalyzeAsync(string methodName)

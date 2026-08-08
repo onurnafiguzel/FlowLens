@@ -29,6 +29,11 @@ public sealed class EfProbeTests
 
     private const string ProductEntity = "ModularCommerce.Catalog.Domain.Products.Product";
 
+    private const string CartContext =
+        "ModularCommerce.Cart.Infrastructure.Persistence.CartDbContext";
+
+    private const string CartAssembly = "ModularCommerce.Cart.Infrastructure";
+
     [Fact]
     public void ReadsTableNamesFromTheModelWithoutADatabase()
     {
@@ -82,11 +87,12 @@ public sealed class EfProbeTests
     }
 
     /// <summary>
-    /// Shadow properties exist in the model but have no C# member, so they can carry no source
-    /// location. The graph must be able to tell them apart or it would have to fabricate one.
+    /// Shadow properties exist in the model but have no C# member, so a Column node for one can
+    /// only be located at its entity rather than at a property of its own. The flag is what lets
+    /// the overlay make that distinction instead of fabricating a line number.
     /// </summary>
     [Fact]
-    public void MarksShadowPropertiesSoTheyGetNoColumnNode()
+    public void MarksShadowPropertiesSoTheirColumnCanBeLocatedDifferently()
     {
         var result = Read(new DbContextDeclaration(OrderingContext, OrderingAssembly, "test"));
         var snapshot = Assert.Single(result.Snapshots);
@@ -95,6 +101,38 @@ public sealed class EfProbeTests
 
         Assert.Contains(line.Properties, p => p.IsShadow);
         Assert.Contains(line.Properties, p => !p.IsShadow);
+    }
+
+    /// <summary>
+    /// The container column of an OwnsMany(...).ToJson() collection.
+    /// <para>
+    /// It belongs to neither side's GetProperties(): the owned type's members are JSON fields and
+    /// the owner's Items is a navigation. So without collecting it explicitly the column does not
+    /// exist in the snapshot at all - measured, cart.carts.Items was absent from the graph while
+    /// <c>record.Items = items</c> was analysed and then discarded as unmapped.
+    /// </para>
+    /// <para>
+    /// Named after the NAVIGATION, because that is the name C# assigns to and therefore the only
+    /// one an analyzer can match against.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void ResolvesTheContainerColumnOfAJsonMappedCollection()
+    {
+        var result = Read(new DbContextDeclaration(CartContext, CartAssembly, "test"));
+        var snapshot = Assert.Single(result.Snapshots);
+
+        // Both the owner and the JSON-mapped item report "carts" - the item names the table its
+        // document lives in. Only the owner has columns of its own.
+        var cart = Assert.Single(snapshot.Entities, e => e.TableName == "carts" && !e.IsMappedToJson);
+        var container = Assert.Single(cart.Properties, p => p.Name == "Items");
+
+        Assert.False(container.IsShadow, "the navigation is a real C# member, so it can be located");
+        Assert.False(string.IsNullOrEmpty(container.ColumnName));
+
+        // The owned type itself owns no column - that is the whole point of ToJson.
+        var item = Assert.Single(snapshot.Entities, e => e.IsMappedToJson);
+        Assert.All(item.Properties, p => Assert.Null(p.ColumnName));
     }
 
     [Fact]
