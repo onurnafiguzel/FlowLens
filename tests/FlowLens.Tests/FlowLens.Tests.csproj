@@ -18,12 +18,28 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <!--
+    Synthetic-workspace tests compile snippets that use IEndpointRouteBuilder and MapGroup, so the
+    test host needs the ASP.NET Core reference assemblies on its TPA list for SyntheticWorkspace to
+    hand them to Roslyn. No ASP.NET Core code is executed.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <ItemGroup>
     <None Update="appsettings.test.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\FlowLens.Core\FlowLens.Core.csproj" />
+
+    <!--
+      CliOptions decides which of trace's two modes runs, and getting that wrong sends the user to
+      a call chain with no tables in it. Argument parsing is pure and fast to test, so it is tested
+      rather than discovered from the console.
+    -->
+    <ProjectReference Include="..\..\src\FlowLens.Cli\FlowLens.Cli.csproj" />
   </ItemGroup>
 
 </Project>

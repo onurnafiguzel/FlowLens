@@ -14,4 +14,40 @@
     <PackageReference Include="Microsoft.CodeAnalysis.Workspaces.MSBuild" Version="5.6.0" />
   </ItemGroup>
 
+  <!--
+    Phase 3 reads EF Core's IModel to map entity->table and property->column. That requires the
+    target's compiled DbContext types to be loaded into THIS process, which forces a decision
+    about assembly identity. See docs/phase-3-notes.md for the full reasoning; the short version:
+
+      - The EF/Npgsql assemblies below are UNIFIED with the target: TargetModelLoadContext returns
+        null for these names so they resolve from FlowLens's own TPA. That is what makes
+        typeof(DbContext) the same Type on both sides of the load-context boundary.
+      - Versions are pinned to what the target actually ships (its Host deps.json says EF 10.0.9 /
+        Npgsql provider 10.0.2). The TPA binds by simple name and IGNORES version, so a version
+        below the target's would bind silently and fail later as MissingMethodException.
+        EfVersionGate turns that into a loud pre-flight failure instead.
+      - Because the unified set is exactly this package list, NuGet restore (NU1605) is the
+        build-time enforcement mechanism. That is the structural difference from the MSBL001
+        trap documented in Directory.Build.props: no runtime resolver hook is involved.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.9" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.2" />
+  </ItemGroup>
+
+  <!--
+    The target is an ASP.NET Core app, so its assemblies reference the ASP.NET Core shared
+    framework - Microsoft.Extensions.Hosting.Abstractions among others. Those live in the shared
+    framework rather than in the target's output, so nothing on disk can supply them and the load
+    context cannot invent them: without this, loading a module assembly raises
+    ReflectionTypeLoadException for its hosted-service types.
+
+    Measured, not guessed: three Infrastructure assemblies each reported exactly one unloadable
+    type before this was added. No ASP.NET Core code is executed - this only widens the TPA so the
+    target's own references resolve.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
 </Project>

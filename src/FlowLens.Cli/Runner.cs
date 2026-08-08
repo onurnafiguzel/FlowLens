@@ -10,6 +10,26 @@ public static class Runner
     public const int ExitOk = 0;
     public const int ExitLoadProblem = 1;
     public const int ExitCompilationErrors = 2;
+
+    /// <summary>Analysis ran but is knowingly incomplete (unresolved routes, budget exhausted).</summary>
+    public const int ExitIncomplete = 3;
+
+    /// <summary>The requested endpoint does not exist.</summary>
+    public const int ExitNotFound = 4;
+
+    /// <summary>
+    /// A graph was produced but violates an invariant - a node without filePath or line, or an edge
+    /// pointing nowhere. Not written, because an unattributable graph cannot be checked by hand.
+    /// </summary>
+    public const int ExitInvalidGraph = 5;
+
+    /// <summary>
+    /// The EF model could not be read or could not be trusted, so no graph was produced. Distinct
+    /// from <see cref="ExitIncomplete"/> because this is an environment problem with a known fix -
+    /// build the target, align a package version - not an analysis that came up short.
+    /// </summary>
+    public const int ExitModelUnavailable = 6;
+
     public const int ExitUsage = 64;
 
     /// <summary>
@@ -36,13 +56,46 @@ public static class Runner
                 : ExitUsage;
         }
 
-        Console.WriteLine("FlowLens - Phase 1 (Roslyn warm-up)");
+        Console.WriteLine(options.Command switch
+        {
+            CliCommand.Endpoints => "FlowLens - Phase 2 (endpoint discovery)",
+            CliCommand.Trace when options.TracesGraphFile => "FlowLens - Phase 3 (graph traversal)",
+            CliCommand.Trace => "FlowLens - Phase 2 (call chain)",
+            CliCommand.Build => "FlowLens - Phase 3 (graph build)",
+            _ => "FlowLens - Phase 1 (Roslyn warm-up)",
+        });
         Console.WriteLine();
+
+        // Traversing a built graph needs no Roslyn and no MSBuild: it is a few dictionary lookups
+        // over a file. Loading the solution first would add ~16s to answer a question the graph
+        // already contains, which is the whole reason graph.json exists.
+        if (options.TracesGraphFile)
+        {
+            return Phase3Commands.Trace(options);
+        }
 
         using var loadResult = await LoadAsync(options.SolutionPath);
         ReportDiagnostics(loadResult);
 
         var solutionDirectory = Path.GetDirectoryName(options.SolutionPath)!;
+
+        if (options.Command != CliCommand.Scan)
+        {
+            // A load problem invalidates everything downstream: a silently skipped project makes
+            // "nothing calls this" indistinguishable from "we never looked".
+            if (loadResult.HasFailures || !loadResult.AllProjectsLoaded)
+            {
+                return DetermineExitCode(loadResult, compilationFailed: false);
+            }
+
+            var exit = options.Command == CliCommand.Build
+                ? await Phase3Commands.BuildAsync(loadResult, solutionDirectory, options)
+                : await Phase2Commands.RunAsync(loadResult, solutionDirectory, options);
+
+            Console.WriteLine($"Result: exit {exit}");
+            return exit;
+        }
+
         var scan = await ScanAsync(loadResult.Solution, solutionDirectory);
         var report = ScanReport.Build(scan);
         ReportScan(report, options);
