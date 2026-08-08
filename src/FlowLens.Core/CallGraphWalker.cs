@@ -54,12 +54,18 @@ public sealed record TraceStats(
     IReadOnlyDictionary<string, int>? CandidateReasons = null,
     IReadOnlyDictionary<int, int>? NodesByDepth = null);
 
+/// <param name="ReachedMethods">
+/// Node id -> the method symbol behind it, for every method the walk reached. Phase 3's EF overlay
+/// needs to re-open these bodies to look for entity access, and re-deriving the symbol from the id
+/// would mean parsing the id - which is exactly the coupling NodeId exists to prevent.
+/// </param>
 public sealed record TraceResult(
-    IReadOnlyList<TraceNode> Nodes,
-    IReadOnlyList<TraceEdge> Edges,
+    IReadOnlyList<Node> Nodes,
+    IReadOnlyList<Edge> Edges,
     IReadOnlyList<string> Warnings,
     IReadOnlyList<RaisedEvent> InternalDomainEvents,
-    TraceStats Stats);
+    TraceStats Stats,
+    IReadOnlyDictionary<string, IMethodSymbol> ReachedMethods);
 
 /// <summary>
 /// Breadth-first walk from an endpoint through the call chain, across the module boundary via
@@ -81,9 +87,9 @@ public sealed class CallGraphWalker(
 {
     private readonly TraversalOptions _options = options ?? new TraversalOptions();
 
-    private readonly Dictionary<string, TraceNode> _nodes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Node> _nodes = new(StringComparer.Ordinal);
     private readonly HashSet<(string From, string To, EdgeKind Kind)> _edgeKeys = [];
-    private readonly List<TraceEdge> _edges = [];
+    private readonly List<Edge> _edges = [];
     private readonly List<string> _warnings = [];
     private readonly List<RaisedEvent> _internalDomainEvents = [];
     private readonly Dictionary<SyntaxTree, SemanticModel> _semanticModels = [];
@@ -91,6 +97,12 @@ public sealed class CallGraphWalker(
     // Keyed on the node id, which is derived from OriginalDefinition - so every instantiation of
     // a generic method converges on one entry and the walk terminates.
     private readonly HashSet<string> _visitedBodies = new(StringComparer.Ordinal);
+
+    // Every method the walk touched, for Phase 3's EF overlay to re-analyse. Instance state like
+    // everything else here, which is what lets one walker be driven from many roots: the visited
+    // set, node table and this dictionary are shared across successive WalkAsync calls, so a
+    // method reachable from two endpoints is analysed once and carries edges from both.
+    private readonly Dictionary<string, IMethodSymbol> _reachedMethods = new(StringComparer.Ordinal);
 
     private int _maxDepthReached;
     private bool _budgetExhausted;
@@ -109,7 +121,7 @@ public sealed class CallGraphWalker(
         EndpointRecord endpoint,
         CancellationToken cancellationToken = default)
     {
-        var endpointNode = new TraceNode(
+        var endpointNode = new Node(
             Id: endpoint.Id,
             Kind: NodeKind.Endpoint,
             DisplayName: $"{endpoint.HttpMethod} {endpoint.Route}",
@@ -130,7 +142,7 @@ public sealed class CallGraphWalker(
     /// point; this one exists so the traversal can be exercised without constructing a route.
     /// </summary>
     public async Task<TraceResult> WalkAsync(
-        TraceNode root,
+        Node root,
         SyntaxNode? body,
         CancellationToken cancellationToken = default)
     {
@@ -199,7 +211,8 @@ public sealed class CallGraphWalker(
                 CandidateReasons: _candidateReasons,
                 NodesByDepth: _nodes.Values
                     .GroupBy(n => n.Depth)
-                    .ToDictionary(g => g.Key, g => g.Count())));
+                    .ToDictionary(g => g.Key, g => g.Count())),
+            _reachedMethods);
     }
 
     private async Task ExpandAsync(WorkItem item, Queue<WorkItem> queue, CancellationToken cancellationToken)
@@ -355,7 +368,7 @@ public sealed class CallGraphWalker(
             var eventId = NodeId.ForEvent(eventType);
             var (file, line) = SourceLocation.For(eventType, solutionDirectory);
 
-            AddNode(new TraceNode(
+            AddNode(new Node(
                 Id: eventId,
                 Kind: NodeKind.Event,
                 DisplayName: eventType.Name,
@@ -366,7 +379,8 @@ public sealed class CallGraphWalker(
 
             AddEdge(
                 item.NodeId, eventId, EdgeKind.Publishes,
-                evidence: $"raise {raise.RaiseSite} · map {raise.MappingSite}");
+                evidence: $"raise {raise.RaiseSite} · map {raise.MappingSite}",
+                mechanism: EdgeMechanism.DomainEventRegistry);
 
             var consumers = consumerIndex.ConsumersOf(eventType);
 
@@ -381,7 +395,15 @@ public sealed class CallGraphWalker(
             foreach (var consumer in consumers)
             {
                 var consumerId = AddMethodNode(consumer.ConsumeMethod, item.Depth + 2, ambiguous: false);
-                AddEdge(eventId, consumerId, EdgeKind.Consumes);
+
+                var (consumerFile, consumerLine) =
+                    SourceLocation.For(consumer.ConsumerType, solutionDirectory);
+
+                AddEdge(
+                    eventId, consumerId, EdgeKind.Consumes,
+                    evidence: $"{consumer.ConsumerType.Name} : IConsumer<{eventType.Name}> " +
+                              $"at {consumerFile}:{consumerLine}",
+                    mechanism: EdgeMechanism.ConsumerRegistration);
                 EnqueueBody(consumer.ConsumeMethod, consumerId, item.Depth + 2, queue);
             }
         }
@@ -409,21 +431,28 @@ public sealed class CallGraphWalker(
     {
         var id = NodeId.ForMethod(method);
         var (file, line) = SourceLocation.For(method, solutionDirectory);
+        var module = ModuleOf(method);
 
-        AddNode(new TraceNode(
+        AddNode(new Node(
             Id: id,
             Kind: NodeKindClassifier.Classify(method),
             DisplayName: NodeId.DisplayName(method),
-            Module: ModuleOf(method),
+            Module: module,
             FilePath: file,
             Line: line,
             Ambiguous: ambiguous,
+            // Shared-kernel plumbing: Result.Success, Error.Validation and friends. Real calls, so
+            // they stay in the graph, but they carry no impact-analysis signal. The test is which
+            // project declares them, not what they are called.
+            Utility: module == ProjectClassifier.SharedModule,
             Depth: depth));
+
+        _reachedMethods.TryAdd(id, method);
 
         return id;
     }
 
-    private void AddNode(TraceNode node)
+    private void AddNode(Node node)
     {
         if (_nodes.TryGetValue(node.Id, out var existing))
         {
@@ -444,14 +473,15 @@ public sealed class CallGraphWalker(
         string to,
         EdgeKind kind,
         bool ambiguous = false,
-        string? evidence = null)
+        string? evidence = null,
+        EdgeMechanism mechanism = EdgeMechanism.None)
     {
         if (!_edgeKeys.Add((from, to, kind)))
         {
             return;
         }
 
-        _edges.Add(new TraceEdge(from, to, kind, evidence, ambiguous));
+        _edges.Add(new Edge(from, to, kind, evidence, ambiguous, mechanism));
     }
 
     private void MarkTruncated(string nodeId)

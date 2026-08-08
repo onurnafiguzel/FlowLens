@@ -24,7 +24,7 @@ Plan mode'da plan hazır olunca üç seçenek sunulur; **"No, keep planning"** i
 
 - [x] Faz 0 — Kurulum ve keşif
 - [x] Faz 1 — Roslyn'e ısınma
-- [x] Faz 2 — Call chain *(doğrulama bekliyor)*
+- [x] Faz 2 — Call chain
 - [ ] Faz 3 — Graph + tablo/kolon
 - [ ] Faz 4 — Analyst Bot
 - [ ] Faz 5a — Triage Bot
@@ -292,33 +292,93 @@ sınırı mı? Yapısal sınırsa docs/known-limitations.md'ye ekle.
 
 ```
 @docs/FlowLens-Roadmap.md — Faz 3'ü ve Bölüm 5 (Veri modeli) bölümünü oku.
+@docs/known-limitations.md, @docs/phase-2-notes.md ve
+@docs/phase2-validation.md dosyalarını da oku — Faz 2'nin bulguları bu
+fazın tasarımını doğrudan belirliyor.
 
 Kod yazmadan planını sun:
 
-1. Node ve Edge C# modelleri nasıl olacak? Node id stratejisi ne olacak —
-   fully qualified symbol name mi, hash mi? Neden?
+--- Standart sorular ---
+
+1. Node ve Edge C# modelleri nasıl olacak? Faz 2'de sabitlenen node ID
+   formatı graph.json'da aynen kullanılacak mı, yoksa dönüşüm gerekiyor mu?
 
 2. EF Core IModel'e erişim: DbContext'i design-time'da nasıl örnekleyeceksin?
    Veritabanı bağlantısı OLMADAN model metadata'sına erişmenin yolu ne?
-   ModularCommerce'te birden fazla DbContext varsa hepsini nasıl toplayacaksın?
+   ModularCommerce'te modül başına ayrı DbContext varsa hepsini nasıl
+   bulup yükleyeceksin? Bir DbContext örneklenemezse ne olacak — sessizce
+   atlamak YASAK, açıkça raporlanacak.
 
 3. Bir repository metodunun hangi entity'ye WRITE yaptığını Roslyn'den nasıl
    çıkaracaksın? DbSet<T> erişimi, Add/Update/Remove çağrıları, SaveChanges —
-   hangi sinyalleri kullanacaksın?
+   hangi sinyalleri kullanacaksın? IOrderRepository.AddAsync çağrısından
+   Order entity'sine, oradan orders tablosuna giden zincirin HER halkasını
+   açıkça tarif et. Bu zincir bulanık kalırsa graph'taki tablolar
+   "tesadüfen doğru" kategorisine düşer.
 
 4. Kolon seviyesi: bir handler'da `order.Status = ...` şeklinde set edilen
-   property'yi yakalayıp kolona bağlamanın yolu ne? Bunun sınırları neler?
+   property'yi yakalayıp kolona bağlamanın yolu ne? Aggregate metotları
+   içinden set ediliyorsa (MarkPaid gibi) nasıl izleyeceksin? Bunun
+   sınırları neler?
 
 5. Traversal: Forward ve Backward metotlarının imzaları ne olacak?
+   Faz 2'nin CallGraphWalker'ı yeniden kullanılacak mı, yoksa graph.json
+   üzerinde ayrı bir traversal mı yazılacak?
+
+--- Faz 2'den gelen girdiler ---
+
+A) L9 kararı ŞİMDİ verilecek: constructor çağrıları (new Order(...)) kenar
+   üretmiyor. Faz 2'de kaybı yoktu, Faz 3'te entity construction önem
+   kazanabilir. Karar kriteri:
+   - Entity yazma noktalarını repository çağrılarından (AddAsync, Update,
+     SaveChanges) çıkarmak yeterli mi?
+   - Yeterliyse L9 kalıcı sınır olarak kapansın.
+   - Değilse SADECE EF Core IModel'de karşılığı olan tiplerin
+     construction'larını gez — tüm ObjectCreationExpressionSyntax'ı değil.
+   Kararını ölçümle gerekçelendir, tahminle değil.
+
+B) L8 gürültüsü: catalog trace'inde 9 düğümün 4'ü Result.Success /
+   Result.Failure / Error.Validation gibi Shared.Kernel yardımcıları.
+   graph.json'da bunları nasıl ele alacaksın — node olarak kalsınlar mı,
+   filtrelensinler mi, yoksa "utility" olarak etiketlenip traversal'da
+   opsiyonel mi olsunlar? Faz 4'te LLM'e gönderilecek alt kümenin boyutu
+   bu karara bağlı.
+
+C) "Tesadüfen doğru" riski: Faz 2 doğrulamasında NotificationProcessor'ın
+   koleksiyon enjeksiyonu anlaşılmadığı halde doğru sonuç çıkmıştı.
+   EF Core eşlemesinde aynı tuzağa düşme — bir tablonun graph'a doğru
+   sebeple mi yoksa tesadüfen mi girdiğini ayırt edebilecek şekilde kanıt
+   taşı (hangi repository çağrısından, hangi entity üzerinden).
+
+D) FakePspClient: ödeme sağlayıcısının sahte implementasyonu. Faz 3'te
+   ExternalCall node'u olarak mı ele alınacak, yoksa test double olarak mı?
+   "Bu akış hangi dış servise gidiyor" sorusunun cevabı buna bağlı.
+   Kararını ve gerekçesini yaz.
+
+--- Kabul kriterleri (plan bunlara göre kurulacak) ---
+
+- graph.json üretiliyor, şeması roadmap Bölüm 5'teki gibi
+- HER node'da filePath ve line dolu — boş olan varsa build fail etsin
+- Entity → Table ve Property → Column eşlemeleri EF Core IModel'den geliyor
+  (isim tahmini veya SQL parse YOK)
+- Forward(nodeId, maxDepth) ve Backward(nodeId, maxDepth) çalışıyor
+- CLI: `flowlens build` graph üretiyor,
+  `flowlens trace <endpoint>` forward traversal sonucunu basıyor
+- Graph istatistikleri raporlanıyor: node tipi başına sayı, edge tipi
+  başına sayı, ambiguous node sayısı, çalışma süresi
+- Faz 2'nin testleri yeşil kalıyor
+- Yeni testler: bilinen endpoint için beklenen tablolar graph'ta ·
+  backward traversal doğru endpoint'leri buluyor · sabit sayı hardcode yok
 
 ÖNEMLİ: Graph database, vector store veya harici bir bağımlılık ÖNERME.
 graph.json + List<Node> + LINQ ile çözülecek. Yetersiz olacağını
 düşünüyorsan önce gerekçeni yaz ve bana sor.
-
-Planı onaylamamı bekle.
 ```
 
-### [UYGULAMA]
+### [UYGULAMA] — plan mode kullanıyorsan gerek yok
+
+> Kabul kriterleri yukarıdaki `[KEŞİF]` prompt'una dahil edildi. Bu blok
+> yalnız edit mode ile çalışıyorsan kullanılır.
 
 ```
 Planı uygula.

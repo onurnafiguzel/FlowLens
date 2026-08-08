@@ -34,6 +34,10 @@ public static class NodeId
 
     public const string EndpointPrefix = "endpoint:";
     public const string EventPrefix = "event:";
+    public const string EntityPrefix = "entity:";
+    public const string TablePrefix = "table:";
+    public const string ColumnPrefix = "column:";
+    public const string ExternalPrefix = "external:";
 
     /// <summary>
     /// The one form of a method symbol used for identity anywhere in FlowLens.
@@ -71,6 +75,35 @@ public static class NodeId
     /// </summary>
     public static string ForEvent(ITypeSymbol eventType) =>
         $"{EventPrefix}{ForType(eventType)}";
+
+    /// <summary>
+    /// Id for a mapped entity. The fully qualified CLR type name is also the join key against EF
+    /// Core's model, which is why <see cref="TypeFormat"/> must render exactly what
+    /// <c>Type.FullName</c> produces - the Roslyn side and the reflection side can only meet on a
+    /// string, since symbol identity is per-compilation.
+    /// </summary>
+    public static string ForEntity(string clrTypeName) => $"{EntityPrefix}{clrTypeName}";
+
+    public static string ForEntity(ITypeSymbol entityType) => ForEntity(ForType(entityType));
+
+    /// <summary>
+    /// Id for a table. The schema is not optional: ModularCommerce really does have both
+    /// catalog.outbox_messages and ordering.outbox_messages, so an unqualified id would collapse
+    /// two different tables into one node.
+    /// </summary>
+    public static string ForTable(string schemaQualifiedTableName) =>
+        $"{TablePrefix}{schemaQualifiedTableName}";
+
+    public static string ForColumn(string schemaQualifiedTableName, string columnName) =>
+        $"{ColumnPrefix}{schemaQualifiedTableName}.{columnName}";
+
+    /// <summary>
+    /// Id for a call leaving the process, keyed by the type that makes it. The destination URL is
+    /// deliberately not part of the id: it comes from configuration at runtime, so any hostname
+    /// here would be invented rather than observed.
+    /// </summary>
+    public static string ForExternalCall(string callerClrTypeName) =>
+        $"{ExternalPrefix}{callerClrTypeName}";
 
     /// <summary>Short, human-facing label. Never used as an identity key.</summary>
     public static string DisplayName(IMethodSymbol symbol) =>

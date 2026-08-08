@@ -175,26 +175,56 @@ Test projeleri taranırsa sahte `PUBLISHES` kenarı üretirler. FlowLens test pr
 
 ---
 
-## L5 — Design-time DbContext factory yok
+## L5 — Design-time DbContext factory yok ✅ KAPANDI (Faz 3)
 
-**Durum:** Açık. Faz 3'te ele alınacak.
+**Durum:** **Kapandı.** Options elle kuruluyor; factory gerekmedi.
 
-Roadmap Faz 3 "DbContext'i design-time factory ile örnekle" diyor. ModularCommerce'te
-`IDesignTimeDbContextFactory` implementasyonu **yok** (survey §5).
+8 DbContext'in tamamı tek parametreli primary constructor'a sahip (`DbContextOptions<TContext>`),
+`OnConfiguring` override'ı yok ve tablo/kolon adları `IEntityTypeConfiguration` sınıflarının
+**içinde** sabit. Dolayısıyla elle kurulan options **production ile birebir aynı** adları veriyor;
+DI tarafında kaybedilecek bir isimlendirme yok (snake_case convention paketi de yok).
 
-Plan: `new DbContextOptionsBuilder<T>().UseNpgsql(sahte-connection-string)` ile elle kur.
-`UseNpgsql` yalnızca provider seçer, bağlantı açmaz — `IModel` kurmak için veritabanı gerekmez.
+```csharp
+var builder = (DbContextOptionsBuilder)Activator.CreateInstance(
+    typeof(DbContextOptionsBuilder<>).MakeGenericType(contextType))!;
+builder.UseNpgsql(ProbeConnectionString, npgsql => npgsql.SetPostgresVersion(17, 0));
+var context = (DbContext)Activator.CreateInstance(contextType, builder.Options)!;
+```
 
-**Discovery istisnası:** `DiscoveryModule` pgvector için gerçek bir `NpgsqlDataSource` kuruyor
-ve veri kaynağı ilk bağlantıda tip kataloğunu cache'liyor. Ayrıca `discovery.product_embeddings`
-tablosunun `vector(1536)` kolonu migration içinde **raw SQL** ile eklendiği için `IModel`'de
-zaten görünmeyecek. Discovery'nin kolon seviyesi eşlemesi Faz 3'te eksik kalacak — bu bilinçli.
+Connection string **iyi biçimli** olmak zorunda (`NpgsqlConnectionStringBuilder` onu hemen parse
+eder), ama hiçbir bağlantı açılmıyor. `SetPostgresVersion` sabitlendi ki çıktı yalnızca kaynağın
+fonksiyonu olsun, sağlayıcı varsayılanının değil.
+
+**Discovery istisnası çürütüldü.** `CREATE EXTENSION vector` ve `NpgsqlDataSourceBuilder.UseVector()`
+`DiscoveryModule.cs:54,59`'da — yani **Api** projesinin DI kaydında, DbContext'te değil.
+`new DiscoveryDbContext(options)` onları hiç çalıştırmıyor ve Discovery de diğer yedisi gibi
+sorunsuz örnekleniyor.
+
+**Geriye kalan gerçek eksik:** `discovery.product_embeddings` tablosunun `vector(1536)` kolonu
+migration içinde raw SQL ile ekleniyor ve `ProductEmbeddingConfiguration.cs:21`
+`builder.Ignore(e => e.Embedding)` diyor — `IModel`'de yok, dolayısıyla graph'ta da yok. Tablonun
+kendisi **var** (3 kolonuyla), yalnız embedding kolonu eksik. → L6.
+
+**Faz 3'ün getirdiği yeni ön koşul:** hedef repo **derlenmiş** olmalı ve özellikle `Host` projesi
+derlenmiş olmalı — modül `bin`'leri NuGet varlıklarını içermiyor, tam bağımlılık kapanışı yalnız
+uygulama çıktısında. Detay: [phase-3-notes.md §3](phase-3-notes.md).
 
 ---
 
-## L7 — Map fiili olmayan endpoint kayıtları bulunmuyor
+## L7 — Map fiili olmayan endpoint kayıtları bulunmuyor 🔒 KAPSAM KARARI (Faz 3)
 
-**Durum:** Açık. Gerektiğinde ele alınacak.
+**Durum:** **Kalıcı kapsam kararı olarak kapandı.** Kapsama 25/27 (%92,6) kalıyor.
+
+Faz 3'te `graph.json` şeması sabitlenirken karara bağlandı. `MapHealthChecks` endpoint'lerini
+eklemek için ya `(ANY, /health/live)` gibi bir **sözde-fiil uydurmak** ya da `HttpMethod` alanını
+nullable yapmak gerekiyordu. İkisi de ontolojiyi, taşıdıkları bilgiden fazla kirletirdi:
+`/health/live` ve `/health/ready` hiçbir handler'a, entity'ye veya tabloya gitmiyor —
+`Forward()` onlardan boş küme döndürürdü.
+
+Impact analizi ve triage için değeri sıfır olduğundan **bilerek dışarıda bırakıldı.** Sessiz kayıp
+değil: sayı raporlanıyor ve fark burada yazılı.
+
+> Aşağıdaki tarihsel kayıt sorunun ne olduğunu anlatıyor.
 **Keşfedildiği yer:** Faz 2 ilk çalıştırması. **Faz 2 doğrulamasında detaylandırıldı.**
 
 > **Doğrulama notu:** "Sözlüğe bir girdi ekle" göründüğü kadar basit değil. `MapHealthChecks`
@@ -219,9 +249,24 @@ argümandan okumak. Faz 3'te `graph.json` üretilirken ele alınabilir.
 
 ---
 
-## L8 — Graph'ta Shared.Kernel gürültüsü
+## L8 — Graph'ta Shared.Kernel gürültüsü ✅ KARARA BAĞLANDI (Faz 3)
 
-**Durum:** Bilinçli kabul. Faz 3'te yeniden değerlendirilecek.
+**Durum:** **Etiketlendi, filtrelenmedi.** `utility: true` node attribute'u.
+
+Kural **yapısal, isim tahmini değil**: node'un bildirildiği projenin modülü `Shared` ise
+(`ProjectClassifier`), node `utility` işaretlenir. 400 node'un **15'i** bu kategoride.
+
+Filtrelemek yerine etiketlemenin gerekçesi: filtreleme geri alınamaz bir bilgi kaybı ve
+*"eksik, fazladan tehlikelidir"* ilkesine ters. Etiket kararı tüketiciye bırakıyor —
+`TraversalQuery.IncludeUtility: false` Faz 4'ün LLM'e göndereceği alt kümeyi küçültür,
+graph dosyası değişmeden.
+
+Yeni bir `NodeKind` **değil**: `ambiguous`/`truncated` ile aynı kategoride bir attribute,
+ontoloji büyümedi (roadmap §5).
+
+> Faz 3 ölçümü, önceki tahmini düzeltiyor: checkout trace'inin 106 node'unun "önemli bir kısmı"
+> denmişti; tüm graph'ta Shared oranı %3,75. `Forward()` tablo/kolon hedefine yürüdüğünde bunlar
+> zaten yaprak kalıyor.
 
 Checkout trace'inin 106 node'unun 89'u `Method` tipinde ve önemli bir kısmı
 `Result.Success` / `Result.Failure` / `Error.Validation` gibi Shared.Kernel yardımcıları.
@@ -236,10 +281,30 @@ Framework/NuGet metotları zaten graph'a **girmiyor** (`SourceLocation.IsInSourc
 
 ---
 
-## L9 — Constructor çağrıları kenar üretmiyor
+## L9 — Constructor çağrıları kenar üretmiyor ✅ KARARA BAĞLANDI (Faz 3) — dar biçimde açıldı
 
-**Durum:** Açık. **DÜZELTİLEBİLİR** (yapısal sınır değil). Faz 3'te karara bağlanacak.
-**Keşfedildiği yer:** Faz 2 doğrulaması, §5.1.
+**Durum:** **`IModel`'de karşılığı olan tipler için açıldı; diğerleri kapalı kaldı.**
+
+**Karar ölçümle verildi.** 17 entity tipinden **16'sı** zaten bir `DbSet` yazma sinyaliyle ya da
+sahibi üzerinden yakalanıyordu. Tek istisna **`ProductEmbedding`**: `DbSet<ProductEmbedding>`
+deklare edilmiş (`DiscoveryDbContext.cs:17`) ama `src/` içinde **hiç referans edilmiyor** — tüm
+erişim `ProductVectorRepository`'nin raw SQL'i üzerinden, tek construction sitesi
+`ProductEmbedding.cs:50`. Yani "repository çağrılarından çıkarmak yeterli mi?" sorusunun cevabı
+17'de 16 evet, 1 hayır.
+
+Uygulanan: `ObjectCreationExpressionSyntax` geziliyor **ama yalnızca yüklenmiş bir `IModel`'de
+karşılığı olan tipler için**. Gürültü maliyeti ölçüldü — `CheckoutResponse`, `ChargeRequest`,
+`PspResult` gibi DTO record'ları IModel'de olmadıkları için hâlâ dışarıda. Kenar `WRITES` ama
+`mechanism: EntityConstruction` ile **ikinci sınıf** işaretli: construction persist değildir,
+yalnızca entity'yi erişilebilir kümeye sokar.
+
+**Beklenmedik ikinci kazanç:** ctor gövdeleri de analiz edilmeye başlandı. Yürüyücü invocation
+takip ettiği için `new Product(...)` hiçbir zaman node olmuyor, dolayısıyla aggregate'lerin
+kolonlarının çoğunun ilk yazıldığı yer görünmezdi — `POST /api/catalog/products` **sıfır** kolon
+raporluyordu. Artık bir metot IModel'deki bir tipi construct ediyorsa o tipin ctor'ları da
+analiz edilip kolon yazmaları **çağıran metoda** atfediliyor. Kolon sayısı 38 → 82.
+
+> Aşağıdaki tarihsel kayıt Faz 2'deki durumu anlatıyor.
 
 `CallGraphWalker` yalnız `InvocationExpressionSyntax` geziyor; `ObjectCreationExpressionSyntax`
 kenar üretmiyor. Checkout zincirinde kaçırılanlar:
@@ -345,6 +410,104 @@ de o ağaçta. Sonuç doğru, **mekanizma yaklaşık**: Polly'nin delegate'i ça
 
 Bu vakada ikisi de zararsız. Genel çözümü data-flow analizi gerektirir — roadmap §3'te kapsam
 dışı.
+
+---
+
+## L13 — Kolon seviyesi eşlemesinin altı sınırı
+
+**Durum:** Açık, hepsi ölçüldü ve raporlanıyor. Bir kısmı yapısal.
+**Keşfedildiği yer:** Faz 3.
+
+Kolon yazmaları `AssignmentExpressionSyntax` / `++` / `SetProperty` üzerinden bulunuyor ve EF Core
+`IModel`'inden kolona bağlanıyor. Görünmeyenler:
+
+| # | Sınır | Tip | Ne oluyor |
+|---|---|---|---|
+| 1 | `Ignore` edilmiş property'ler | Yapısal (doğru davranış) | `Order.TotalAmount`, `Order.Currency`, `DomainEvents` kolonu yok. Sessizce düşmüyor: *"property written but not mapped to a column"* diagnostic'i basılıyor |
+| 2 | Shadow property'ler | Yapısal | `xmin`, `order_id`, owned koleksiyonların sentetik `id`'si — kaynakta C# üyesi yok, dolayısıyla `filePath`/`line` de yok. Column node **üretilmiyor**; uydurma konum yazmak zorunlu-alan invariant'ını kırardı |
+| 3 | Change-tracker yazması | Kısmen kapatıldı | Materialize + mutasyon + `SaveChanges`, hiç EF mutation çağrısı yok. `SaveChangesWithEntityParameter` (ikinci sınıf) bunu entity düzeyinde yakalıyor, kolon düzeyinde değil |
+| 4 | Raw SQL kolonları | Yapısal → L6 | `NaiveReservationStrategy.cs:37`'nin `UPDATE stock_items`'ı ve `ProductVectorRepository`'nin tüm erişimi. SQL string'i parse etmek roadmap'te yasak; siteler diagnostic olarak listeleniyor |
+| 5 | `ToJson()` owned koleksiyon | Yapısal | `cart.carts.Items` tek bir `jsonb` kolonu; `CartItemRecord.ProductId/Quantity/AddedAtUtc`'nin kolonu **yok**, JSON yolu var. Diagnostic basılıyor |
+| 6 | Paylaşılan value object'in kendi ataması | Yapısal | `Money.Amount = x` `Money`'nin ctor'unda; aynı üye `catalog.products.price_amount`, `payment.payments.Amount` **ve** `ordering.order_lines.UnitPrice`'ı besliyor. Üçünü birden iddia etmek tek yazmayı üç yazma göstermek olurdu. Sahibinin sitesinde (`product.Price = money`) tekil olarak çözülüyor ve orada kaydediliyor |
+
+5 ve 6, tablo düzeyinde **kayıp değil** — ilgili tablolar başka sinyallerle graph'ta.
+
+> **L2 güncellemesi:** L2'nin `AccessorDeclarationSyntax` endişesi Faz 3'te **konusuz kaldı.**
+> `DbSet` erişimi ifadenin *tipinden* çözülüyor, accessor'ın şeklinden değil — dolayısıyla
+> `DbSet<Order> Orders => Set<Order>()` ile `DbSet<Order> Orders { get; set; }` birebir aynı
+> analiz ediliyor. Constructor'lar ise L9 kapsamında (dar biçimde) ele alındı.
+
+---
+
+## L14 — FlowLens hedefin EF Core sürümüne bağımlı
+
+**Durum:** Kalıcı, bilinçli sınır. Aracın **genel amaçlı olmadığının** bir başka kanıtı.
+**Keşfedildiği yer:** Faz 3 tasarımı; Faz 3 revizyonunda zorlayıcı hâle getirildi.
+
+Tablo/kolon adları EF Core'un `IModel`'inden okunuyor (roadmap Faz 3 bunu şart koşuyor: isim
+tahmini ve SQL parse yasak). Bu da hedefin **derlenmiş** DbContext'lerini **bu sürece** yüklemeyi
+gerektiriyor.
+
+`DbContext` ve `IModel` tiplerinin yükleme sınırının iki yanında **aynı `Type`** olması zorunlu —
+aksi halde her cast patlar. Bu yüzden `TargetModelLoadContext`, `Microsoft.EntityFrameworkCore*` ve
+`Npgsql*` adlarını Default context'e bırakıyor; yani **FlowLens'in kendi paket sürümleri** kazanıyor.
+
+**Bağımlılık sürüm bazında sert:** .NET'in TPA listesi assembly'leri basit isimle eşleştirir ve
+sürümü **umursamaz**. FlowLens'in EF'i hedefinkinden eski olamaz ve major'ı farklı olamaz — olursa
+sessizce bağlanır, sonra model kurulurken alakasız bir noktada `MissingMethodException` olarak
+patlar.
+
+`EfPreflight` bunu **build'i durdurarak** uyguluyor: sürüm uyuşmazlığında hiçbir şey yüklenmez,
+`graph.json` yazılmaz, exit 6. Sessiz bozulma yok. Kaçış bayrağı (`--allow-missing-model` gibi)
+**bilerek eklenmedi** — bozuk çıktıyı etiketleyip kabul etmek, bu projenin var oluş sebebinin tersi.
+
+### Farklı sürümlü bir kod tabanı için: EfProbe ayrı process'e taşınır
+
+EF Core'a dokunan **tek** sınıf `EfProbe` (`EfProbeArchitectureTests` bunu zorluyor). Taşıma:
+
+1. `EfProbe.cs` + `TargetModelLoadContext` + `EfVersionGate` yeni bir `FlowLens.EfProbe` exe'sine taşınır.
+2. Exe'nin `Main`'i: `EfProbe.Read(...)` → `EfModelContract.Serialize(...)` → stdout.
+3. `FlowLens.Core`: `Process.Start` + `EfModelContract.Deserialize(stdout)`.
+4. EF/Npgsql paket referansları Core'dan o projeye taşınır.
+
+3. adım **bugün de çalışıyor**: sınırı yalnız `EfModelSnapshot` geçiyor ve o tamamen string/bool.
+`EfProbeContractTests` gerçek hedefin snapshot'ını her koşuda round-trip ediyor, yani taşınabilirlik
+bir niyet değil **her koşuda doğrulanan bir olgu**.
+
+Bugün yapılmadı çünkü tek bir hedef repo var ve süreç sınırı bedavaya gelmiyor (bir
+`Process.Start`, bir JSON kontratı, ayrı bir build çıktısı). Maliyet ancak ikinci bir hedef
+belirdiğinde haklı çıkar.
+
+---
+
+## L15 — SaveChanges interceptor'ının hangi context'e bağlı olduğu modelden çıkarılıyor
+
+**Durum:** Açık, bilinçli varsayım. **Tek yönlü aşırı-yaklaşım.**
+**Keşfedildiği yer:** Faz 3 `graph.json` denetimi (§5.8).
+
+`ordering.outbox_messages` satırını `DomainEventToOutboxInterceptor` **SaveChanges sırasında**
+yazıyor; hiçbir handler ondan bahsetmiyor. Bu yüzden "checkout hangi tablolara yazıyor?" sorusunun
+cevabında outbox eksik kalıyordu. Kural eklendi (`mechanism: SaveChangesInterceptor`), ama iki
+kaveatı var:
+
+**1. Bağ DI'dan değil modelden kuruluyor.** Bir interceptor'ın hangi `DbContext`'e eklendiği
+`options.AddInterceptors(...)` çağrısında yazıyor — generic bir yardımcının (`AddModuleDbContext<T>`)
+içinde. L11 bu tür konfigürasyon okumasını yapısal olarak güvenilmez kaydediyor. Onun yerine:
+interceptor'ın yazdığı entity'yi **tam olarak bir context eşliyorsa** o context'e bağlı sayılıyor.
+İki context aynı entity'yi eşlerse hiçbir şey iddia edilmiyor.
+
+> Bu, bir interceptor kayıtlı olmadığı bir context'e bağlıymış gibi görünebilir demek —
+> ModularCommerce'te böyle bir durum yok (her outbox entity'si kendi modülünün context'inde) ama
+> başka bir kod tabanında olabilir.
+
+**2. Aşırı-yaklaşım.** Interceptor yalnız eşlenecek domain event varsa satır yazar; event
+üretmeyen bir `SaveChanges` outbox'a dokunmaz. FlowLens ayrım yapmıyor, hepsini yazma sayıyor.
+Impact analizi için doğru yanlılık bu — *yazılabilecek* bir tablo cevapta görünmeli — ama precision
+düşürüyor.
+
+**Faz 5 için:** eval set'i bu mekanizmayı ayrı ölçmeli; `SaveChangesWithEntityParameter` ve
+`EntityConstruction` gibi işaretli ama bunlardan farklı olarak **kaçınılmaz** değil — DI okuması
+eklenirse kesinleşebilir.
 
 ---
 

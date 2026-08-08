@@ -6,7 +6,7 @@ namespace FlowLens.Core;
 /// </param>
 public sealed record TraceTreeLine(
     int Indent,
-    TraceNode Node,
+    Node Node,
     EdgeKind? IncomingKind,
     bool Repeated,
     bool AmbiguousEdge,
@@ -37,7 +37,7 @@ public static class TraceReport
         Visit(root, indent: 0, incoming: null, ambiguousEdge: false, evidence: null);
         return lines;
 
-        void Visit(TraceNode node, int indent, EdgeKind? incoming, bool ambiguousEdge, string? evidence)
+        void Visit(Node node, int indent, EdgeKind? incoming, bool ambiguousEdge, string? evidence)
         {
             var repeated = !expanded.Add(node.Id);
             lines.Add(new TraceTreeLine(indent, node, incoming, repeated, ambiguousEdge, evidence));

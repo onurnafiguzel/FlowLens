@@ -119,7 +119,7 @@ public sealed class CallGraphWalkerTests
             consumers,
             options);
 
-        var rootNode = new TraceNode(
+        var rootNode = new Node(
             Id: NodeId.ForMethod(entrySymbol),
             Kind: NodeKind.Method,
             DisplayName: NodeId.DisplayName(entrySymbol),

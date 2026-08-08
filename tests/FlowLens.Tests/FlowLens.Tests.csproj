@@ -33,6 +33,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\FlowLens.Core\FlowLens.Core.csproj" />
+
+    <!--
+      CliOptions decides which of trace's two modes runs, and getting that wrong sends the user to
+      a call chain with no tables in it. Argument parsing is pure and fast to test, so it is tested
+      rather than discovered from the console.
+    -->
+    <ProjectReference Include="..\..\src\FlowLens.Cli\FlowLens.Cli.csproj" />
   </ItemGroup>
 
 </Project>
