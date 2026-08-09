@@ -26,9 +26,9 @@ Plan mode'da plan hazır olunca üç seçenek sunulur; **"No, keep planning"** i
 - [x] Faz 1 — Roslyn'e ısınma
 - [x] Faz 2 — Call chain
 - [x] Faz 3 — Graph + tablo/kolon
-- [ ] Faz 4 — Deterministik API (LLM yok) ← *durak noktası: burada kullanılabilir bir ürün var*
-- [ ] Faz 5 — Dokümantasyon & görselleştirme (LLM yok)
-- [ ] Faz 6 — Triage Bot (LLM yok)
+- [x] Faz 4 — Deterministik API (LLM yok) ← *durak noktası: kullanılabilir ürün*
+- [x] Faz 5 — Dokümantasyon & görselleştirme (LLM yok)
+- [ ] Faz 6 — Triage Bot (LLM yok) ← **sıradaki**
 - [ ] Faz 7 — Eval set (LLM yok)
 - [ ] Faz 8 — Doğal dil arayüzü *(opsiyonel, izole proje)*
 - [ ] *Faz sonrası:* MCP server · incremental cache · CI entegrasyonu · web arayüzü
@@ -594,9 +594,35 @@ Bitince checkout diyagramını ve Ordering modül dokümanını bana göster.
 
 ```
 @docs/FlowLens-Roadmap.md — Faz 6'yı oku.
+@docs/phase-4-notes.md, @docs/phase-5-notes.md ve
+@docs/known-limitations.md dosyalarını da oku.
 
 Bu faz mevcut altyapının ters yönde kullanımı, yeni bir sistem değil.
 LLM YOK — özet cümlesi bile yazılmayacak, çıktı yapılandırılmış rapor.
+
+--- Faz 4-5'ten devreden girdiler ---
+
+A) BACKWARD ZATEN VAR ve doğrulandı (%100 recall/precision, Faz 3).
+   Faz 4'ün AnswerBuilder'ını ve GraphSource'unu AYNEN kullan — üçüncü
+   bir doğruluk kaynağı yaratma. Faz 5'in DocsSite'ı da aynı disiplinle
+   yazıldı, örnek al.
+
+B) RootKind gruplaması hazır: entryPoints.groups zaten
+   Endpoint / Consumer / BackgroundService ayrımını taşıyor. Rapor bunu
+   kullanmalı — "4 endpoint" değil "4 endpoint + 1 background job".
+   Bu ayrım Faz 4'te tam bu faz için eklendi.
+
+C) callSite bilgisi CALLS kenarlarında var (Faz 5). Stack trace'teki
+   satır numarasıyla eşleştirmek mümkün mü, ölç. Mümkünse rapor "hata
+   bu akışın 3. adımında" diyebilir — sadece "bu akışta" demekten iyi.
+
+D) limitations mekanizması hazır (Faz 4): diagnostics dosya eşleşmesiyle
+   cevaba bağlanıyor. Triage raporu da bunu taşımalı — hata noktası ham
+   SQL bölgesindeyse rapor bunu söylemeli.
+
+E) Faz 5'in dersi: sıralamayı deterministik yapmak yetmez, keşfin
+   kendisi deterministik olmalı. Rapor çıktısı deterministik olacaksa
+   aynı tuzağa dikkat.
 
 Kod yazmadan planını sun:
 

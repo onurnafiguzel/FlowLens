@@ -177,36 +177,95 @@ Açık kalan maddeler: F2 (Redis/ExternalCall ontolojisi), F4 (owned navigasyon 
 
 ---
 
-## Faz 4 — Deterministik API (LLM YOK)
+## ✅ Faz 4 — Deterministik API *(tamamlandı, LLM YOK)*
 
-**Amaç:** analistin `dotnet run` çalıştırmak zorunda kalmaması. Faz 3 zaten soruyu %100 precision ile cevaplıyor; eksik olan tek şey erişilebilirlik.
-
-**Performans kuralı:** `build` ~25s sürüyor (66 proje design-time build). Bu, API'nin arkasında **asla** çalışmayacak. API sadece `graph.json` okur; bir istek < 2 saniye.
+Beş uç, hiçbiri LLM çağırmıyor ve hiçbiri solution yüklemiyor. İstek süresi **0,4–1,9 ms**, bellek 652 KB dosya → 3,34 MB heap.
 
 ```
 GET  /endpoints          25 endpoint: route, method, modül, konum
 GET  /trace?node=...     forward — tablolar, kolonlar, R/W, event köprüleri
 GET  /backward?node=...  backward — RootKind'a göre gruplu kökler
 GET  /tables             16 tablo, şema ve modül ile
-GET  /graph/stats        node/edge sayıları, diagnostics, üretim zamanı
+GET  /graph/stats        node/edge sayıları, diagnostics, üretim zamanı, okunan dosya yolu
 ```
 
-**Kabul kriteri:** beşi de çalışıyor, hiçbiri solution yüklemiyor, her response'ta `dosya:satır` ve `limitations` alanı var, graph yoksa açık hata (sessiz boş liste yok).
+**Performans kuralı:** `build` ~25 s sürüyor (66 proje design-time build); API'nin arkasında asla çalışmaz. Yalnız `graph.json` okunur, istek başına mtime + uzunluk kontrolüyle tazelenir, parse hatası son iyi snapshot'ı düşürmez.
 
-> **Durak noktası.** Burada kullanılabilir bir ürün var. Devam etmeden değerlendir.
+**F10 tip seviyesinde çözüldü:** `dataLayer` backward'da `null`, `entryPoints` forward'da yok. Yanlış okuma konvansiyonla değil tiple engelleniyor.
 
-## Faz 5 — Dokümantasyon & görselleştirme
+**`limitations` alanı** iki kaynaktan hesaplanır — build diagnostics'inin dosya eşleşmesi + cevabın kendisinden türetilenler. "0 tablo" yerine *"bu akış `ProductVectorRepository.cs:60`'ta ham SQL kullanıyor, o tablo listede yok"* çıkar. Elle yazılmaz.
 
-**Amaç:** ekibe yeni katılan birinin "bu akış nereden nereye gidiyor" sorusunu, kimseye sormadan ve eskimeyen bir kaynaktan cevaplayabilmesi. Bu, projenin en geniş kitleye hitap eden çıktısı.
+**`confidence` dört kova**, sayısal skor yok: `Direct` / `RowLevel` / `Inferred` / `SecondClass`. Ambiguous için sebep **uydurulmaz** — graph hangi DI şekli olduğunu kaydetmiyor, limitation bunu açıkça söyler.
 
-- **Mermaid diyagram üretimi** — endpoint başına akış şeması: Endpoint → Handler → Repository → Table, event köprüleri ayrı kenar tipiyle
-- **Modül dokümantasyonu** — modül başına markdown: hangi endpoint'ler, hangi tablolar, hangi event'ler publish/consume ediliyor, hangi modüllere bağımlı
-- **Modül bağımlılık grafiği** — hangi modül hangisine dokunuyor; mimari ihlaller burada görünür
-- **Living documentation** — `flowlens docs -o docs/` her commit'te yeniden üretilebilir, elle bakım gerektirmez
+### Tek satır üretim kodu yazılmadan bulunan üç hata
 
-**Kabul kriteri:** üretilen Mermaid GitHub'da render oluyor, her diyagram `dosya:satır` referansı taşıyor, çıktı `graph.json`'dan deterministik olarak üretiliyor (elle düzenleme yok).
+Hepsi bir varsayılanı seçmek için yapılan ölçümden çıktı:
 
-**Neden burada:** Faz 4'ün API'si var, veri hazır, ve bu çıktı hem onboarding hem de blog/mülakat için en gösterilebilir artefakt.
+1. **`Walk` erişilebilirlik filtresi uyguluyordu**, sunum filtresi değil — bir utility node'un arkasında kalan *utility olmayan* her şey sessizce düşüyordu. 16 backward sorgusunun 4'ünde bir kök kayboluyordu (`MigrateAndSeedHostedService`).
+2. **`RootKind` dolu bir node utility etiketlenebiliyordu.** İnvariant eklendi: bir kök, tanımı gereği yardımcı olamaz.
+3. **`graph.json` çıktı sırası deterministik değildi** — aynı kaynaktan iki build, küme olarak aynı ama 8 node / 40 kenar yer değiştirmiş halde. Tek alanlık değişiklik 216 satırlık diff üretiyordu, yani dosya elle okunamaz hale geliyordu. `GraphJson.Canonical` ile sabitlendi; `elapsedMs` dosyadan çıkarıldı (makine hakkında bilgi, graph hakkında değil).
+
+> Faz 2'nin `NotificationProcessor`'ı "tesadüfen doğru"ydu; bu üçü "tesadüfen zararsız"dı.
+
+**Ölçüm tuzağı:** ilk `/trace` ölçümü 138 ms gösterdi. PowerShell'in `Invoke-WebRequest`'i 109 KB gövdeyi nesnelere çeviriyordu; `HttpClient` ile 1,91 ms. Ölçüm aracı, ölçülen şeyin 70 katı gürültü üretmişti.
+
+> **Durak noktası.** Burada kullanılabilir bir ürün var.
+
+## ✅ Faz 5 — Dokümantasyon & görselleştirme *(tamamlandı)*
+
+`flowlens docs -o out/` → **37 dosya**: 25 akış diyagramı + 10 modül dokümanı + 1 modül bağımlılık grafiği + index. 206 test, 37/37 byte-identical, 26/26 `mermaid.parse()`, 0 markdown ihlali.
+
+### Ölçümle değişen beş karar
+
+Bu fazda beş tasarım kararı ölçüm sonucu değişti — kaydedilecek olan kararlar değil, **ölçümün kararı değiştirmesi**.
+
+| Karar | Önce | Ölçüm | Sonra |
+|---|---|---|---|
+| Subgraph ile modül kutulama | Q3'te makul ve ikna edici | 33 kenarın **12'si ilgisiz kutuyu kesiyor** | Reddedildi; modül etikete taşındı (`Cart · cart.carts`) |
+| Sabit yön (LR) | Tek yön tutarlı olur | 896 px'i aşan **20/25** | En geniş fan ≤ 7 → `TD`, üstü `LR` → **6/25** |
+| Yön eşiği değişkeni | Node sayısı | 12 node'lu iki diyagram zıt cevap veriyor | **En geniş fan** — node sayısı yanlış değişkendi |
+| "Sığmıyor" notu | Koşullu, vekil eşikle | Jeneratörün renderer'ı yok, piksel ölçülemez | Koşulsuz, iddiasız satır + mermaid.live bağlantısı |
+| Kardeş kenar sırası (`1..n`) | Adım numarası | 36 grubun **13'ü** aynı çağrı yerini paylaşıyor | Numara adım değil, **çağrı yeri** sırası |
+
+### Kaynak sırası — kardeş kenarlar
+
+Ölçüldü: alfabetik sıralama vakaların **%61'inde** kaynak sırasından farklı. Okuyucu soldan sağa okuyup kod sırası sanıyordu; tesadüfen doğru olabiliyordu ama garantisi yoktu.
+
+- `CALLS` kenarları `callSite` (dosya, satır, kolon) taşıyor; sıralama buna göre
+- Aynı çağrı yerini paylaşan kardeşler **aynı numarayı** alır — tekrarlanan numara kusur değil bilgi: "tek çağrı, iki implementasyona açılıyor"
+- Numaralı adımların **%19'u koşullu** (ternary, if/else, switch, catch, `?.`, `&&`/`||`/`??` sağ tarafı) ve işaretleniyor
+- Aynı hedefe birden fazla çağrı: **57/512 kenar**; ilk çağrı yeri sıralar, hepsi `callSites` listesinde
+- Sayfa altında numaralı adım listesi, her adımda `dosya:satır`
+
+**İddia sınırı:** numaralar kaynak kodda yazılma sırasıdır. Koşullu dallar ve döngüler nedeniyle çalışma sırası farklı olabilir; koşullu işaretli adımlar hiç koşmayabilir.
+
+### Determinizm — Faz 4'ten farklı bir ders
+
+Faz 4'ün dersi **çıktı sıralamasıydı**: aynı küme, farklı sırada yazılıyordu. Faz 5'inki bir katman derinde: **sıralamayı deterministik yapmak yetmez, keşfin kendisi deterministik olmalı.** Üretilen kümenin *kendisi* değişiyordu — `seen` kümesi bir düğüme hangi kenarın bağlanacağını keşif sırasına bırakıyordu. Çıktıyı sıralamak bunu gizlerdi, düzeltmezdi: sıralı ama yanlış bir diyagram hâlâ deterministik görünür.
+
+mermaid.live bağlantıları **stored block** ile üretiliyor (deflate değil): deflate formatı belirlenmiştir ama çıktısı encoder'a bağlıdır, dolayısıyla aynı graph iki makinede iki farklı bağlantı üretip 25 sayfada sahte diff çıkarabilirdi.
+
+### Modül bağımlılığı — dört kategori
+
+Kural hedefin **katmanına** dayanır (node id'sindeki `ModularCommerce.<Modül>.<Katman>` segmenti), modül adına değil.
+
+| Kategori | Kural | Ölçülen |
+|---|---|---|
+| Sözleşme çağrısı — meşru | Hedef katman `Contracts` | 10 |
+| Event — meşru | `PUBLISHES`/`CONSUMES` | 3 |
+| Doğrudan referans — ⚠ ihlal adayı | Hedef `Application`/`Infrastructure`/`Domain` | **2** |
+| Shared — nötr | Hedef modül `Shared` | 204 (çizilmez) |
+
+İhlal adayı iki kenarın ikisi de **ters yönde**: `Shared → Catalog` ve `Shared → Inventory` (seeder). Kural: `X → Shared` gizlenir, `Shared → X` gösterilir. Checkout'un 7 cross-module senkron çağrısının **7/7'si Contracts** — ihlal yok.
+
+> Araç kuralı uygular, hüküm vermez: diyagram "ihlal" demez, "Contracts dışından doğrudan referans" der ve `file:line` verir.
+
+### Doğrulama iki katman
+
+- **Tekrarlanan kapı:** `mermaid.parse()` her koşuda 26/26. Sürüm tam sabit (`mermaid` 11.16.1, `jsdom` 30.0.1), `package-lock.json` commit'li. `node` yoksa test **fail eder**, sessizce geçmez.
+- **Tek seferlik görsel:** PNG render + inceleme + mermaid.live bağlantısı. `mermaid-cli` repo bağımlılığı **yapılmadı** — bir `npm ci`'nin tarayıcı indirmesi "opsiyonel kapı" kararını bozardı.
+
+**Ayrıca bulunanlar:** markdown lazy continuation kusuru (10 modül sayfasının 10'unda; parse hatası yok, mermaid kapısı görmez, testler görmez — dosyaları okurken bulundu), ve sezgisel taramanın seçim etkisi (18/18 sanılan oran, kesin ölçümde 13/36).
 
 ## Faz 6 — Triage Bot (deterministik)
 
