@@ -19,20 +19,36 @@ flowchart LR
   n10[("Payment · payment.payment_attempts")]
   n11[("Payment · payment.payments")]
 
-  n0 --> n1
-  n0 --> n2
-  n0 -.-> n4
-  n0 ==> n5
-  n0 ==> n6
-  n0 ==> n7
-  n0 ==> n8
-  n0 ==> n10
-  n0 ==> n11
+  n0 -->|"1"| n1
+  n0 -.->|"2"| n4
+  n0 ==>|"2"| n7
+  n0 ==>|"2"| n8
+  n0 ==>|"3"| n5
+  n0 ==>|"3"| n6
+  n0 ==>|"4"| n10
+  n0 ==>|"4"| n11
+  n0 -->|"5"| n2
   n1 ==>|"Order"| n8
   n2 ==>|"OutboxMessage"| n9
   n3 --> n0
 ```
 
+
+> **Numaralar kaynak kodda yazılma sırasıdır**, çalışma sırası değil —
+> koşullu dallar, döngüler ve erken `return`'ler ikisini ayırır.
+> **`koşullu` işaretli adımlar hiç koşmayabilir**, ve bir `if`/ternary'nin iki
+> dalındaki adımlar birbirini dışlar — ikisi birden koşmaz.
+> Aynı numarayı taşıyan kutular **tek bir çağrıdan** gelir.
+
+## Çağrı sırası
+
+**CancelOrderHandler.HandleAsync** — `src/Modules/Ordering/ModularCommerce.Ordering.Application/Orders/Cancel/CancelOrderHandler.cs:24`
+
+1. `CancelOrderHandler.cs:30` → `OrderRepository.GetByIdAsync`
+2. `CancelOrderHandler.cs:38` → `OrderCancelled`, `ordering.order_status_history`, `ordering.orders`
+3. `CancelOrderHandler.cs:48` → `inventory.reservations`, `inventory.stock_items`
+4. `CancelOrderHandler.cs:59` → `payment.payment_attempts`, `payment.payments`
+5. `CancelOrderHandler.cs:68` → `OrderRepository.SaveChangesAsync`
 
 ## Veri katmanı
 
@@ -58,4 +74,4 @@ Tam liste: `flowlens trace "POST /api/ordering/orders/{id:guid}/cancel"`
 - **interceptor-columns** — Bir SaveChanges interceptor'inin yazdigi tablolar TABLO duzeyinde dogru, KOLON duzeyinde bos: interceptor'i EF cagirir, kod degil, dolayisiyla govdesindeki atamalar hicbir akisin ulasilabilir kumesinde degil (known-limitations L16-4).<br>`entity:ModularCommerce.Ordering.Infrastructure.Outbox.OutboxMessage`
 
 > Diyagram dar görünüyorsa tıklayarak büyütebilir veya
-> [mermaid.live'da açabilirsiniz](https://mermaid.live/edit#pako:eAEBgwN8_HsiY29kZSI6ImZsb3djaGFydCBMUlxuICBuMFtcIk9yZGVyaW5nIMK3IENhbmNlbE9yZGVySGFuZGxlci5IYW5kbGVBc3luY1wiXVxuICBuMVtcIk9yZGVyaW5nIMK3IE9yZGVyUmVwb3NpdG9yeS5HZXRCeUlkQXN5bmNcIl1cbiAgbjJbXCJPcmRlcmluZyDCtyBPcmRlclJlcG9zaXRvcnkuU2F2ZUNoYW5nZXNBc3luY1wiXVxuICBuM1tbXCJPcmRlcmluZyDCtyBQT1NUIC9hcGkvb3JkZXJpbmcvb3JkZXJzL3tpZDpndWlkfS9jYW5jZWxcIl1dXG4gIG40KFwiT3JkZXJpbmcgwrcgT3JkZXJDYW5jZWxsZWRcIilcbiAgbjVbKFwiSW52ZW50b3J5IMK3IGludmVudG9yeS5yZXNlcnZhdGlvbnNcIildXG4gIG42WyhcIkludmVudG9yeSDCtyBpbnZlbnRvcnkuc3RvY2tfaXRlbXNcIildXG4gIG43WyhcIk9yZGVyaW5nIMK3IG9yZGVyaW5nLm9yZGVyX3N0YXR1c19oaXN0b3J5XCIpXVxuICBuOFsoXCJPcmRlcmluZyDCtyBvcmRlcmluZy5vcmRlcnNcIildXG4gIG45WyhcIk9yZGVyaW5nIMK3IG9yZGVyaW5nLm91dGJveF9tZXNzYWdlc1wiKV1cbiAgbjEwWyhcIlBheW1lbnQgwrcgcGF5bWVudC5wYXltZW50X2F0dGVtcHRzXCIpXVxuICBuMTFbKFwiUGF5bWVudCDCtyBwYXltZW50LnBheW1lbnRzXCIpXVxuXG4gIG4wIC0tPiBuMVxuICBuMCAtLT4gbjJcbiAgbjAgLS4tPiBuNFxuICBuMCA9PT4gbjVcbiAgbjAgPT0-IG42XG4gIG4wID09PiBuN1xuICBuMCA9PT4gbjhcbiAgbjAgPT0-IG4xMFxuICBuMCA9PT4gbjExXG4gIG4xID09PnxcIk9yZGVyXCJ8IG44XG4gIG4yID09PnxcIk91dGJveE1lc3NhZ2VcInwgbjlcbiAgbjMgLS0-IG4wXG4iLCJtZXJtYWlkIjoie1xuICBcInRoZW1lXCI6IFwiZGVmYXVsdFwiXG59IiwiYXV0b1N5bmMiOnRydWUsInVwZGF0ZURpYWdyYW0iOnRydWV91Jw1Fw).
+> [mermaid.live'da açabilirsiniz](https://mermaid.live/edit#pako:eAEBwgM9_HsiY29kZSI6ImZsb3djaGFydCBMUlxuICBuMFtcIk9yZGVyaW5nIMK3IENhbmNlbE9yZGVySGFuZGxlci5IYW5kbGVBc3luY1wiXVxuICBuMVtcIk9yZGVyaW5nIMK3IE9yZGVyUmVwb3NpdG9yeS5HZXRCeUlkQXN5bmNcIl1cbiAgbjJbXCJPcmRlcmluZyDCtyBPcmRlclJlcG9zaXRvcnkuU2F2ZUNoYW5nZXNBc3luY1wiXVxuICBuM1tbXCJPcmRlcmluZyDCtyBQT1NUIC9hcGkvb3JkZXJpbmcvb3JkZXJzL3tpZDpndWlkfS9jYW5jZWxcIl1dXG4gIG40KFwiT3JkZXJpbmcgwrcgT3JkZXJDYW5jZWxsZWRcIilcbiAgbjVbKFwiSW52ZW50b3J5IMK3IGludmVudG9yeS5yZXNlcnZhdGlvbnNcIildXG4gIG42WyhcIkludmVudG9yeSDCtyBpbnZlbnRvcnkuc3RvY2tfaXRlbXNcIildXG4gIG43WyhcIk9yZGVyaW5nIMK3IG9yZGVyaW5nLm9yZGVyX3N0YXR1c19oaXN0b3J5XCIpXVxuICBuOFsoXCJPcmRlcmluZyDCtyBvcmRlcmluZy5vcmRlcnNcIildXG4gIG45WyhcIk9yZGVyaW5nIMK3IG9yZGVyaW5nLm91dGJveF9tZXNzYWdlc1wiKV1cbiAgbjEwWyhcIlBheW1lbnQgwrcgcGF5bWVudC5wYXltZW50X2F0dGVtcHRzXCIpXVxuICBuMTFbKFwiUGF5bWVudCDCtyBwYXltZW50LnBheW1lbnRzXCIpXVxuXG4gIG4wIC0tPnxcIjFcInwgbjFcbiAgbjAgLS4tPnxcIjJcInwgbjRcbiAgbjAgPT0-fFwiMlwifCBuN1xuICBuMCA9PT58XCIyXCJ8IG44XG4gIG4wID09PnxcIjNcInwgbjVcbiAgbjAgPT0-fFwiM1wifCBuNlxuICBuMCA9PT58XCI0XCJ8IG4xMFxuICBuMCA9PT58XCI0XCJ8IG4xMVxuICBuMCAtLT58XCI1XCJ8IG4yXG4gIG4xID09PnxcIk9yZGVyXCJ8IG44XG4gIG4yID09PnxcIk91dGJveE1lc3NhZ2VcInwgbjlcbiAgbjMgLS0-IG4wXG4iLCJtZXJtYWlkIjoie1xuICBcInRoZW1lXCI6IFwiZGVmYXVsdFwiXG59IiwiYXV0b1N5bmMiOnRydWUsInVwZGF0ZURpYWdyYW0iOnRydWV9l5BIdQ).

@@ -165,6 +165,208 @@ public sealed class FlowDiagramBuilderTests : IClassFixture<DocsFixture>
         _fixture.Graph.Nodes.Where(n => n.Kind == NodeKind.Endpoint);
 }
 
+/// <summary>
+/// Source order, and the line between what it claims and what it cannot.
+/// <para>
+/// Before call sites the siblings of a node were ordered by fully qualified symbol name -
+/// alphabetical, namespace first. Measured, that disagreed with the order the calls are written in
+/// for 61% of sibling groups, and a reader scanning left to right had no way to tell the agreeing
+/// cases from the rest.
+/// </para>
+/// </summary>
+public sealed class CallSiteTests : IClassFixture<DocsFixture>
+{
+    private const string RemoveItem =
+        "ModularCommerce.Cart.Application.Carts.RemoveItem.RemoveItemHandler.HandleAsync"
+        + "(System.Guid, System.Guid, System.Threading.CancellationToken)";
+
+    private readonly DocsFixture _fixture;
+
+    public CallSiteTests(DocsFixture fixture) => _fixture = fixture;
+
+    /// <summary>
+    /// The anchor. RemoveItemHandler writes GetAsync at :14 and the two persistence calls at :33
+    /// and :34; alphabetically the six resulting boxes group by CLASS instead, putting every
+    /// Caching* call before every Postgres* one. Ordering by name passes this test only by accident,
+    /// so it is pinned on the line numbers rather than on the names.
+    /// </summary>
+    [Fact]
+    public void SiblingsAreOrderedBySourceNotByName()
+    {
+        var edges = Diagram(RemoveItem).Edges
+            .Where(e => e.FromId == RemoveItem)
+            .ToList();
+
+        Assert.Equal([14, 14, 33, 33, 34, 34], edges.Select(e => e.CallSite?.Line));
+
+        // ... and the same list sorted by name is a DIFFERENT order, so the assertion above is not
+        // silently satisfied by alphabet.
+        Assert.NotEqual(
+            edges.Select(e => e.ToId),
+            edges.OrderBy(e => e.ToId, StringComparer.Ordinal).Select(e => e.ToId));
+    }
+
+    /// <summary>
+    /// One call, several boxes - so one number. Numbering the six edges 1..6 would claim six steps
+    /// where the source has three: the interface resolves to two implementations and both are drawn.
+    /// Measured across all 25 flows, every resolvable sibling group has at least two siblings
+    /// sharing a call site, so this is the normal case rather than a corner.
+    /// </summary>
+    [Fact]
+    public void SiblingsSharingOneCallSiteShareOneNumber()
+    {
+        var diagram = Diagram(RemoveItem);
+        var group = Assert.Single(FlowSteps.For(diagram), g => g.From.Id == RemoveItem);
+
+        Assert.Equal(3, group.Steps.Count);
+        Assert.All(group.Steps, s => Assert.Equal(2, s.Targets.Count));
+        Assert.Equal([1, 2, 3], group.Steps.Select(s => s.Number));
+    }
+
+    /// <summary>
+    /// Source order is not execution order, and the sharpest case is exclusion: RemoveItemHandler's
+    /// steps 2 and 3 are the two arms of one ternary and never both run. The flag is what lets the
+    /// page say so instead of implying a sequence.
+    /// </summary>
+    [Fact]
+    public void AStepInsideABranchIsMarkedConditional()
+    {
+        var group = Assert.Single(FlowSteps.For(Diagram(RemoveItem)), g => g.From.Id == RemoveItem);
+
+        Assert.False(group.Steps[0].Site.Conditional);
+        Assert.True(group.Steps[1].Site.Conditional);
+        Assert.True(group.Steps[2].Site.Conditional);
+    }
+
+    /// <summary>
+    /// A contracted edge stands for "the call written HERE eventually reaches that node", so it
+    /// carries the first hop's position - not an intermediate one, and not the callee's declaration.
+    /// </summary>
+    [Fact]
+    public void AContractedEdgeCarriesItsFirstHopCallSite()
+    {
+        var edge = Assert.Single(
+            Diagram(RemoveItem).Edges,
+            e => e.FromId == RemoveItem && e.ToId.Contains("PostgresCartRepository.GetAsync", StringComparison.Ordinal));
+
+        // The route is Handler -> ICartRepository.GetAsync -> PostgresCartRepository.GetAsync; the
+        // only invocation on it is the first hop, written at line 14.
+        Assert.Equal(14, edge.CallSite?.Line);
+        Assert.EndsWith("RemoveItemHandler.cs", edge.CallSite?.FilePath, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Not everything has a call site and nothing may be invented. An interface-to-implementation
+    /// edge is DI resolution and a table edge comes from the EF model; neither is written anywhere,
+    /// so neither is numbered.
+    /// </summary>
+    [Fact]
+    public void AnEdgeWithoutACallSiteIsNeitherNumberedNorGivenOne()
+    {
+        var diagram = Diagram(RemoveItem);
+        var numbers = FlowSteps.Numbers(diagram);
+
+        foreach (var edge in diagram.Edges.Where(e => e.CallSite is null))
+        {
+            Assert.False(numbers.ContainsKey((edge.FromId, edge.ToId)));
+        }
+
+        // And they are still reported rather than dropped.
+        Assert.Contains(FlowSteps.For(diagram), g => g.Unrecorded.Count > 0);
+    }
+
+    /// <summary>
+    /// One edge per (from, to, kind), but a call written three times is still written three times.
+    /// CheckoutHandler invokes GetByIdempotencyKeyAsync at three separate lines and the graph kept
+    /// only the first until call sites were merged.
+    /// </summary>
+    [Fact]
+    public void ARepeatedCallKeepsEveryPlaceItIsWritten()
+    {
+        var edge = Assert.Single(
+            _fixture.Document.Edges,
+            e => e.Kind == EdgeKind.Calls
+                && e.FromId.Contains("CheckoutHandler.HandleAsync", StringComparison.Ordinal)
+                && e.ToId.Contains("IOrderRepository.GetByIdempotencyKeyAsync", StringComparison.Ordinal));
+
+        Assert.True(edge.CallSites.Count > 1, $"expected several call sites, got {edge.CallSites.Count}");
+        Assert.Equal(edge.CallSites.OrderBy(s => s.Line).Select(s => s.Line), edge.CallSites.Select(s => s.Line));
+    }
+
+    /// <summary>
+    /// The population-wide form of the rule, reported by endpoint so a regression names its victims.
+    /// A group must never show more numbers than the source has call sites - that is the shape the
+    /// obvious 1..n numbering takes, and it manufactures steps: six where the source has three,
+    /// seventeen where it has eleven.
+    /// </summary>
+    [Fact]
+    public void NoFlowShowsMoreStepsThanTheSourceHasCallSites()
+    {
+        var invented = new List<string>();
+
+        foreach (var endpoint in _fixture.Graph.Nodes.Where(n => n.Kind == NodeKind.Endpoint))
+        {
+            var diagram = FlowDiagramBuilder.Build(_fixture.Graph, endpoint.Id, _fixture.Document.Diagnostics);
+
+            foreach (var group in FlowSteps.For(diagram))
+            {
+                var sites = group.Steps
+                    .SelectMany(s => s.Targets)
+                    .Select(e => (e.CallSite!.FilePath, e.CallSite.Line, e.CallSite.Column))
+                    .Distinct()
+                    .Count();
+
+                if (group.Steps.Count != sites)
+                {
+                    invented.Add(
+                        $"{endpoint.DisplayName} · {group.From.DisplayName}: " +
+                        $"{group.Steps.Count} numara, {sites} çağrı yeri");
+                }
+            }
+        }
+
+        // Counted and named in the message: a regression here is systematic, and "some groups
+        // differ" is not enough to see how far it spread.
+        Assert.True(
+            invented.Count == 0,
+            $"{invented.Count} grup kaynakta olmayan adım gösteriyor:{Environment.NewLine}  " +
+            string.Join(Environment.NewLine + "  ", invented));
+    }
+
+    /// <summary>
+    /// The diagram labels and the step list are one claim in two places. They are generated from a
+    /// single source so they cannot drift, and this pins that they do not.
+    /// </summary>
+    [Fact]
+    public void EveryNumberOnTheDiagramAppearsInTheStepList()
+    {
+        foreach (var endpoint in _fixture.Graph.Nodes.Where(n => n.Kind == NodeKind.Endpoint))
+        {
+            var diagram = FlowDiagramBuilder.Build(_fixture.Graph, endpoint.Id, _fixture.Document.Diagnostics);
+            var listed = FlowSteps.For(diagram)
+                .Where(g => g.Steps.Count > 1)
+                .SelectMany(g => g.Steps.Select(s => (g.From.Id, s.Number)))
+                .ToHashSet();
+
+            foreach (var ((from, _), number) in FlowSteps.Numbers(diagram))
+            {
+                Assert.Contains((from, number), listed);
+            }
+        }
+    }
+
+    private FlowDiagram Diagram(string containing)
+    {
+        var endpoint = _fixture.Graph.Nodes
+            .Where(n => n.Kind == NodeKind.Endpoint)
+            .First(n => FlowDiagramBuilder
+                .Build(_fixture.Graph, n.Id, _fixture.Document.Diagnostics)
+                .Nodes.Any(x => x.Id == containing));
+
+        return FlowDiagramBuilder.Build(_fixture.Graph, endpoint.Id, _fixture.Document.Diagnostics);
+    }
+}
+
 public sealed class ModuleGraphBuilderTests : IClassFixture<DocsFixture>
 {
     private readonly DocsFixture _fixture;

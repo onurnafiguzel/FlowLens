@@ -25,6 +25,24 @@ flowchart TD
 ```
 
 
+> **Numaralar kaynak kodda yazılma sırasıdır**, çalışma sırası değil —
+> koşullu dallar, döngüler ve erken `return`'ler ikisini ayırır.
+> **`koşullu` işaretli adımlar hiç koşmayabilir**, ve bir `if`/ternary'nin iki
+> dalındaki adımlar birbirini dışlar — ikisi birden koşmaz.
+> Aynı numarayı taşıyan kutular **tek bir çağrıdan** gelir.
+
+## Çağrı sırası
+
+**GetCartHandler.HandleAsync** — `src/Modules/Cart/ModularCommerce.Cart.Application/Carts/GetCart/GetCartHandler.cs:9`
+
+1. `GetCartHandler.cs:13` → `CachingCartRepository.GetAsync`, `PostgresCartRepository.GetAsync`
+
+**PostgresCartRepository.GetAsync** — `src/Modules/Cart/ModularCommerce.Cart.Infrastructure/Persistence/PostgresCartRepository.cs:10`
+
+1. `PostgresCartRepository.cs:30` *(koşullu)* → `PostgresCartRepository.IsDatabaseUnavailable`
+
+- `cart.carts` — kaynakta bir çağrı ifadesi yok (veri kenarı ya da arayüzden implementasyona geçiş), çağrı yeri kaydedilmedi
+
 ## Veri katmanı
 
 | Tablo | Erişim | Kolonlar | Tanım |

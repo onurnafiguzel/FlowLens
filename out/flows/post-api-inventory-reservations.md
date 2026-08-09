@@ -17,6 +17,18 @@ flowchart TD
 ```
 
 
+> **Numaralar kaynak kodda yazılma sırasıdır**, çalışma sırası değil —
+> koşullu dallar, döngüler ve erken `return`'ler ikisini ayırır.
+> **`koşullu` işaretli adımlar hiç koşmayabilir**, ve bir `if`/ternary'nin iki
+> dalındaki adımlar birbirini dışlar — ikisi birden koşmaz.
+> Aynı numarayı taşıyan kutular **tek bir çağrıdan** gelir.
+
+## Çağrı sırası
+
+**ReserveStockHandler.HandleAsync** — `src/Modules/Inventory/ModularCommerce.Inventory.Application/Reservations/ReserveStock/ReserveStockHandler.cs:12`
+
+1. `ReserveStockHandler.cs:24` → `inventory.reservations`, `inventory.stock_items`
+
 ## Veri katmanı
 
 | Tablo | Erişim | Kolonlar | Tanım |

@@ -11,14 +11,27 @@ flowchart TD
   n2[["Discovery · POST /api/discovery/search"]]
   n3>"Discovery · HTTP -&gt; HttpEmbeddingService"]
 
-  n0 --> n1
-  n0 --> n3
+  n0 -->|"1"| n3
+  n0 -->|"2"| n1
   n2 --> n0
 
   classDef unseen stroke-dasharray: 4 4,stroke-width:2px
   class n1 unseen
 ```
 
+
+> **Numaralar kaynak kodda yazılma sırasıdır**, çalışma sırası değil —
+> koşullu dallar, döngüler ve erken `return`'ler ikisini ayırır.
+> **`koşullu` işaretli adımlar hiç koşmayabilir**, ve bir `if`/ternary'nin iki
+> dalındaki adımlar birbirini dışlar — ikisi birden koşmaz.
+> Aynı numarayı taşıyan kutular **tek bir çağrıdan** gelir.
+
+## Çağrı sırası
+
+**SearchProductsHandler.HandleAsync** — `src/Modules/Discovery/ModularCommerce.Discovery.Application/Search/SearchProductsHandler.cs:17`
+
+1. `SearchProductsHandler.cs:29` → `HTTP -> HttpEmbeddingService`
+2. `SearchProductsHandler.cs:35` → `ProductVectorRepository.SearchAsync`
 
 ## Diyagram neyi göstermiyor
 
@@ -32,4 +45,4 @@ Tam liste: `flowlens trace "POST /api/discovery/search"`
 - **ambiguous-implementation** — Bir interface cagrisi birden fazla implementasyona aciliyor. Graph HANGISININ kostugunu KAYDETMIYOR: dekorator zinciri ve koleksiyon enjeksiyonunda hepsi kosar (dogru cevap), config anahtariyla secilende yalniz biri kosar (asiri-yaklasim). Olculen bedel: veri katmaninda 0 tablo/0 kolon, ExternalCall'da 1/1 yanlis pozitif.<br>`src/Modules/Discovery/ModularCommerce.Discovery.Infrastructure/Embedding/FakeEmbeddingService.cs:17`, `src/Modules/Discovery/ModularCommerce.Discovery.Infrastructure/Embedding/HttpEmbeddingService.cs:29`
 
 > Diyagram dar görünüyorsa tıklayarak büyütebilir veya
-> [mermaid.live'da açabilirsiniz](https://mermaid.live/edit#pako:eAEBxAE7_nsiY29kZSI6ImZsb3djaGFydCBURFxuICBuMFtcIkRpc2NvdmVyeSDCtyBTZWFyY2hQcm9kdWN0c0hhbmRsZXIuSGFuZGxlQXN5bmNcIl1cbiAgbjFbXCJEaXNjb3ZlcnkgwrcgUHJvZHVjdFZlY3RvclJlcG9zaXRvcnkuU2VhcmNoQXN5bmNcIl1cbiAgbjJbW1wiRGlzY292ZXJ5IMK3IFBPU1QgL2FwaS9kaXNjb3Zlcnkvc2VhcmNoXCJdXVxuICBuMz5cIkRpc2NvdmVyeSDCtyBIVFRQIC0mZ3Q7IEh0dHBFbWJlZGRpbmdTZXJ2aWNlXCJdXG5cbiAgbjAgLS0-IG4xXG4gIG4wIC0tPiBuM1xuICBuMiAtLT4gbjBcblxuICBjbGFzc0RlZiB1bnNlZW4gc3Ryb2tlLWRhc2hhcnJheTogNCA0LHN0cm9rZS13aWR0aDoycHhcbiAgY2xhc3MgbjEgdW5zZWVuXG4iLCJtZXJtYWlkIjoie1xuICBcInRoZW1lXCI6IFwiZGVmYXVsdFwiXG59IiwiYXV0b1N5bmMiOnRydWUsInVwZGF0ZURpYWdyYW0iOnRydWV9roSdTw).
+> [mermaid.live'da açabilirsiniz](https://mermaid.live/edit#pako:eAEB0gEt_nsiY29kZSI6ImZsb3djaGFydCBURFxuICBuMFtcIkRpc2NvdmVyeSDCtyBTZWFyY2hQcm9kdWN0c0hhbmRsZXIuSGFuZGxlQXN5bmNcIl1cbiAgbjFbXCJEaXNjb3ZlcnkgwrcgUHJvZHVjdFZlY3RvclJlcG9zaXRvcnkuU2VhcmNoQXN5bmNcIl1cbiAgbjJbW1wiRGlzY292ZXJ5IMK3IFBPU1QgL2FwaS9kaXNjb3Zlcnkvc2VhcmNoXCJdXVxuICBuMz5cIkRpc2NvdmVyeSDCtyBIVFRQIC0mZ3Q7IEh0dHBFbWJlZGRpbmdTZXJ2aWNlXCJdXG5cbiAgbjAgLS0-fFwiMVwifCBuM1xuICBuMCAtLT58XCIyXCJ8IG4xXG4gIG4yIC0tPiBuMFxuXG4gIGNsYXNzRGVmIHVuc2VlbiBzdHJva2UtZGFzaGFycmF5OiA0IDQsc3Ryb2tlLXdpZHRoOjJweFxuICBjbGFzcyBuMSB1bnNlZW5cbiIsIm1lcm1haWQiOiJ7XG4gIFwidGhlbWVcIjogXCJkZWZhdWx0XCJcbn0iLCJhdXRvU3luYyI6dHJ1ZSwidXBkYXRlRGlhZ3JhbSI6dHJ1ZX0fHaGa).

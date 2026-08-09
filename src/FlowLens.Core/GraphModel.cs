@@ -186,9 +186,36 @@ public sealed record Node(
     public string Location => Line > 0 ? $"{FilePath}:{Line}" : FilePath;
 }
 
+/// <summary>
+/// Where a call is WRITTEN, which is not where the callee is declared - the node's own Line is the
+/// declaration. Source order is the only order static analysis can honestly report: it says nothing
+/// about what runs, or whether it runs at all.
+/// </summary>
+/// <param name="Column">
+/// 1-based. Two calls can share a line (measured: Product.Create and Money.Create on
+/// CreateProductHandler.cs:21) and without the column their order falls to a tie-break instead of
+/// to the source.
+/// </param>
+/// <param name="Conditional">
+/// The invocation sits inside a branch - a ternary, if/else, switch, or the short-circuiting side
+/// of &amp;&amp;, || or ??. Such a step may not run at all. Measured because RemoveItemHandler's
+/// two persistence calls are the two arms of one ternary and exclude each other.
+/// </param>
+public sealed record CallSite(string FilePath, int Line, int Column, bool Conditional)
+{
+    public string Location => Line > 0 ? $"{FilePath}:{Line}" : FilePath;
+}
+
 /// <param name="Evidence">
 /// Why this edge exists, in file:line terms, when that is not obvious from its endpoints. This is
 /// what makes a claim checkable by hand rather than merely plausible.
+/// </param>
+/// <param name="CallSites">
+/// Every place this call is written, in source order. A list rather than one value because the
+/// graph keeps one edge per (from, to, kind): measured, 55 of 392 call edges are written more than
+/// once, and CheckoutHandler calls GetByIdempotencyKeyAsync at three separate lines. Empty for
+/// edges that are not written anywhere in source - an interface-to-implementation edge is DI
+/// resolution, not a call site, and inventing one would be a fabricated claim.
 /// </param>
 public sealed record Edge(
     string FromId,
@@ -196,7 +223,14 @@ public sealed record Edge(
     EdgeKind Kind,
     string? Evidence = null,
     bool Ambiguous = false,
-    EdgeMechanism Mechanism = EdgeMechanism.None);
+    EdgeMechanism Mechanism = EdgeMechanism.None,
+    IReadOnlyList<CallSite>? CallSites = null)
+{
+    public IReadOnlyList<CallSite> CallSites { get; init; } = CallSites ?? [];
+
+    /// <summary>The first place it is written, or null. This is the ordering key for siblings.</summary>
+    public CallSite? FirstCallSite => CallSites.Count == 0 ? null : CallSites[0];
+}
 
 /// <summary>Classifies a symbol into a <see cref="NodeKind"/> using the conventions measured in the survey.</summary>
 public static class NodeKindClassifier

@@ -100,6 +100,9 @@ public static class DocsSite
         page.AppendLine(MermaidWriter.Flow(diagram));
         page.AppendLine();
 
+        AppendOrderClaim(page, diagram);
+        AppendSteps(page, diagram);
+
         if (diagram.DataLayer.Tables.Count > 0)
         {
             page.AppendLine("## Veri katmanı");
@@ -413,6 +416,114 @@ public static class DocsSite
         // renders wrong - exactly the class of defect no syntax gate can see.
         page.AppendLine();
     }
+
+    /// <summary>
+    /// What the numbers do and do not claim. Three sentences, each earning its place from a measured
+    /// case: source order is not execution order; a branch may not run at all (RemoveItemHandler's
+    /// two persistence calls are the arms of one ternary and exclude each other); and a repeated
+    /// number means one call reaching several places, not several steps.
+    /// </summary>
+    private static void AppendOrderClaim(StringBuilder page, FlowDiagram diagram)
+    {
+        if (FlowSteps.For(diagram).Count == 0)
+        {
+            return;
+        }
+
+        page.AppendLine("> **Numaralar kaynak kodda yazılma sırasıdır**, çalışma sırası değil —");
+        page.AppendLine("> koşullu dallar, döngüler ve erken `return`'ler ikisini ayırır.");
+        page.AppendLine("> **`koşullu` işaretli adımlar hiç koşmayabilir**, ve bir `if`/ternary'nin iki");
+        page.AppendLine("> dalındaki adımlar birbirini dışlar — ikisi birden koşmaz.");
+        page.AppendLine("> Aynı numarayı taşıyan kutular **tek bir çağrıdan** gelir.");
+        page.AppendLine();
+    }
+
+    /// <summary>
+    /// The numbered steps, for nodes that have more than one outgoing edge - the only place where
+    /// left-to-right order was carrying an unwarranted meaning.
+    /// </summary>
+    private static void AppendSteps(StringBuilder page, FlowDiagram diagram)
+    {
+        var groups = FlowSteps.For(diagram);
+
+        if (groups.Count == 0)
+        {
+            return;
+        }
+
+        page.AppendLine("## Çağrı sırası");
+        page.AppendLine();
+
+        foreach (var group in groups)
+        {
+            page.AppendLine(CultureInfo.InvariantCulture,
+                $"**{group.From.DisplayName}** — `{group.From.Location}`");
+            page.AppendLine();
+
+            foreach (var step in group.Steps)
+            {
+                var targets = string.Join(", ", step.Targets.Select(t => $"`{Named(diagram, t.ToId)}`" + Repeats(t)));
+                var conditional = step.Site.Conditional ? " *(koşullu)*" : string.Empty;
+
+                page.AppendLine(CultureInfo.InvariantCulture,
+                    $"{step.Number}. `{Where(group.From, step.Site)}`{conditional} → {targets}");
+            }
+
+            if (group.Unrecorded.Count > 0)
+            {
+                // The blank line ends the ordered list. Without it markdown folds these into the
+                // last numbered item - the lazy-continuation defect the block gate exists to catch.
+                page.AppendLine();
+
+                foreach (var edge in group.Unrecorded)
+                {
+                    // An explicit gap, never a silent absence. Two things reach here with nothing to
+                    // point at: an interface-to-implementation edge is DI resolution, and a table
+                    // edge comes from the EF model rather than from an invocation.
+                    page.AppendLine(
+                        $"- `{Named(diagram, edge.ToId)}` — kaynakta bir çağrı ifadesi yok " +
+                        "(veri kenarı ya da arayüzden implementasyona geçiş), çağrı yeri kaydedilmedi");
+                }
+            }
+
+            page.AppendLine();
+        }
+    }
+
+    private static string Named(FlowDiagram diagram, string id) =>
+        diagram.Nodes.FirstOrDefault(n => string.Equals(n.Id, id, StringComparison.Ordinal))?.DisplayName ?? id;
+
+    /// <summary>
+    /// The other places the same call is written. The graph keeps one edge per (from, to, kind), so
+    /// without this the step list would show the first line and silently answer a narrower question:
+    /// CheckoutHandler calls GetByIdempotencyKeyAsync at three lines, not one.
+    /// </summary>
+    private static string Repeats(DiagramEdge edge)
+    {
+        if (edge.CallSites.Count < 2)
+        {
+            return string.Empty;
+        }
+
+        var others = edge.CallSites
+            .Skip(1)
+            .OrderBy(s => s.Line)
+            .ThenBy(s => s.Column)
+            .Select(s => $":{s.Line.ToString(CultureInfo.InvariantCulture)}");
+
+        return $" *(ayrıca {string.Join(", ", others)})*";
+    }
+
+    /// <summary>
+    /// A call is written inside the caller's own file, so repeating the full path on every step
+    /// buries the line number the reader came for - the path is already on the heading above. Only
+    /// when the two differ (partial classes) is the full path printed, because then it is the
+    /// answer rather than noise.
+    /// </summary>
+    private static string Where(DiagramNode from, CallSite site) =>
+        from.Location.StartsWith(site.FilePath + ":", StringComparison.Ordinal)
+            ? $"{site.FilePath[(site.FilePath.LastIndexOf('/') + 1)..]}:{site.Line}"
+            : site.Location;
 
     private static void AppendLimitations(StringBuilder page, IReadOnlyList<string> limitations)
     {

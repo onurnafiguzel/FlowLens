@@ -117,7 +117,12 @@ public static class GraphJson
                 .ThenBy(e => e.Kind)
                 .ThenBy(e => e.Mechanism)
                 .ThenBy(e => e.Evidence ?? string.Empty, StringComparer.Ordinal)
-                .ThenBy(e => e.Ambiguous),
+                .ThenBy(e => e.Ambiguous)
+                // Call sites arrive in walk order, which is source order within one body; the key
+                // keeps the ordering total once two edges agree on everything above.
+                .ThenBy(e => e.FirstCallSite?.FilePath ?? string.Empty, StringComparer.Ordinal)
+                .ThenBy(e => e.FirstCallSite?.Line ?? 0)
+                .ThenBy(e => e.FirstCallSite?.Column ?? 0),
         ],
         Diagnostics = [.. document.Diagnostics.OrderBy(d => d, StringComparer.Ordinal)],
     };

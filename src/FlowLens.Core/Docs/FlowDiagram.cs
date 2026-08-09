@@ -34,12 +34,26 @@ public enum DiagramEdgeKind
 /// edge, or the interface behind a call. Empty when contracting several plumbing methods, where a
 /// list would be noise.
 /// </param>
+/// <param name="CallSites">
+/// Every place the call that starts this edge is WRITTEN, in source order. Empty when nothing in
+/// source writes it - an interface-to-implementation edge is DI resolution, and a fabricated
+/// position would be worse than an admitted gap. More than one when the same call is written
+/// repeatedly: CheckoutHandler reaches GetByIdempotencyKeyAsync from three separate lines, and
+/// showing only the first would quietly answer a narrower question than the reader asked.
+/// </param>
 public sealed record DiagramEdge(
     string FromId,
     string ToId,
     DiagramEdgeKind Kind,
     string Label,
-    bool Ambiguous);
+    bool Ambiguous,
+    IReadOnlyList<CallSite>? CallSites = null)
+{
+    public IReadOnlyList<CallSite> CallSites { get; init; } = CallSites ?? [];
+
+    /// <summary>The first place it is written - the position that orders it among its siblings.</summary>
+    public CallSite? CallSite => CallSites.Count == 0 ? null : CallSites[0];
+}
 
 /// <param name="Intermediate">Method-kind nodes dropped by the layer filter.</param>
 /// <param name="Utility">Shared-kernel plumbing.</param>

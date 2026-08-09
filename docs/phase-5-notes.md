@@ -586,11 +586,146 @@ sayıları bu yüzden `docs/` altında üretilmiş dosyalardan alındı.
 
 ---
 
+## 11. Kaynak sırası — kardeş kutuların sırası neye göre?
+
+### 11.1 Eski sıra alfabetikti, ve ölçülen oranda yanıltıcıydı
+
+Kardeş kutuların soldan sağa sırası **tam nitelikli sembol adına** göreydi — namespace baskın,
+kod sırasıyla ilgisiz. Okuyucu soldan sağa okuyup kod sırası sanabilirdi; bazen doğru çıkardı,
+garantisi yoktu.
+
+| Popülasyon | Kardeş grubu | Alfabetik ≠ kaynak |
+|---|---:|---:|
+| Tüm `CALLS` kenarları | 87 | **53 (%61)** |
+| Diyagramlarda görünen kardeşler | 36 (18 çözülebildi) | **11 / 18 (%61)** |
+
+`DELETE /api/cart/items/{productId:guid}` tam örnek. `RemoveItemHandler` sırasıyla `:14`,
+`:33`, `:34` çağırıyor; alfabetik sıra altı kutuyu **sınıfa göre** gruplayıp
+`Caching.Get, Caching.Remove, Caching.Save, Postgres.Get, …` diziyordu. Doğrusu
+`Get:14, Get:14, Remove:33, Remove:33, Save:34, Save:34`.
+
+### 11.2 İddia sınırı — üç cümle, üçü de ölçülmüş bir vakadan
+
+Static analysis **çalışma** sırasını bilemez, **kaynak** sırasını bilir. Her akış sayfasında,
+diyagramın hemen altında:
+
+> **Numaralar kaynak kodda yazılma sırasıdır**, çalışma sırası değil — koşullu dallar, döngüler
+> ve erken `return`'ler ikisini ayırır. **`koşullu` işaretli adımlar hiç koşmayabilir**, ve bir
+> `if`/ternary'nin iki dalındaki adımlar birbirini dışlar — ikisi birden koşmaz. Aynı numarayı
+> taşıyan kutular **tek bir çağrıdan** gelir.
+
+Üçüncü cümle `RemoveItemHandler.cs:33/34`'ten geliyor: ikisi bir ternary'nin iki dalı, ikisi de
+`(koşullu)` işaretli, ve **ikisi birden koşmuyor**. "Sıra farklı olabilir" bunu söylemiyordu.
+
+**Koşullu ölçümü:** 69 numaralı adımın **13'ü (%19)**, 36 grubun **12'si** koşullu bir dalda.
+%19 işaretlemeyi ucuz ve bilgilendirici kılıyor — genel uyarıyla yetinmek gerekmedi.
+Tespit `invocation.Ancestors()`'ı metot gövdesine kadar yürüyor: ternary, `if`/`else`, `switch`,
+`catch`, `?.` ve `&&`/`||`/`??`'nin **sağ** tarafı. Hangi dalın koşacağını söylemiyor — o
+data-flow analysis olurdu, kapsam dışı.
+
+### 11.3 ⚠ Ölçüm, sıralı numaralandırmayı çürüttü
+
+İlk tasarım kenarları `1..n` numaralayacaktı. Ölçüm bunu reddetti: **bir çağrı birden fazla kutu
+üretiyor.** Ambiguous interface çözümü tek `carts.GetAsync(...)`'i iki implementasyona açıyor;
+geçişli daraltma tek çağrıyı hem repository hem tablo kenarına çeviriyor.
+
+`1..n` numaralamak **13 grupta** kaynakta olmayan adım iddia ederdi:
+
+| | numara | gerçek çağrı yeri |
+|---|---:|---:|
+| checkout · `CheckoutHandler.HandleAsync` | **17** | **11** |
+| cancel · `CancelOrderHandler.HandleAsync` | 9 | 5 |
+| delete-cart · `RemoveItemHandler.HandleAsync` | 6 | 3 |
+| … 10 grup daha | | |
+
+**Kural: numara adım değil, ÇAĞRI YERİ sırasıdır.** Aynı çağrı yerini paylaşan kardeşler aynı
+numarayı alır. Tekrarlanan numara kusur değil, bilgi: *"tek çağrı, birden fazla hedef."*
+69 adımın **23'ü** birden fazla hedefli.
+
+> **Bir ölçüm düzeltmesi.** Uygulamadan önceki sezgisel tarama *"18 çözülebilen grubun 18'i"*
+> demişti; kesin ölçüm **36 grubun 13'ü (%36)**. Sezgisel yöntem grupların yalnız yarısını
+> çözebiliyordu ve çözebildikleri tam da paylaşımlı olanlardı — seçim etkisi. Karar değişmiyor
+> (13 grup, 17'ye karşı 11 adım yeterince ciddi), ama sayı yanlıştı.
+
+### 11.4 Etiketin yerleşim maliyeti — Faz 5 kazanımı korundu
+
+Üretilen 25 dosyanın **gerçek render'ından** ölçüldü (§9.5'in dersi):
+
+| | §9.4 sonrası | numaralı |
+|---|---:|---:|
+| **896 px'i aşan** | **6 / 25** | **6 / 25** |
+| Ortalama ölçek | 0,91× | **0,91×** |
+| Kesişen kenar çifti | 10 | **9** |
+| En geniş diyagram | 2012 px | 2077 px (**+%3,2**) |
+
+21 diyagramda artış ≤18 px; kesişme bir **azaldı**. 20/25 → 6/25 kazanımı yerinde.
+
+### 11.5 Kenar durumlar
+
+| Durum | Karar | Ölçülen |
+|---|---|---|
+| Aynı hedef birden fazla çağrılıyor | Kenar bölünmez; **tüm** çağrı yerleri kenarda durur, sıralama ilkine göre, adım listesi *(ayrıca :55, :179)* yazar | **57 / 512** `CALLS` kenarı |
+| Geçiştirilmiş kenar | **İlk hop'un** çağrı yerini taşır — daraltılmış kenar "burada yazılan çağrı oraya ulaşıyor" demek | tümü |
+| Çağrı yeri yok | Numarasız; adım listesinde **açık boşluk** olarak yazılır | **73 / 512** kenar, 20 diyagram kenarı |
+| Aynı satırda iki çağrı | **Kolon** ayırıyor (`SourceLocation.WithColumn`) | `CreateProductHandler.cs:21` |
+
+`CheckoutHandler` → `GetByIdempotencyKeyAsync`: **36, 55, 179** — üçü de kayıtlı, `:36` koşulsuz,
+diğer ikisi koşullu.
+
+**Çağrı yeri olmayan kenar sessizce kaybolmuyor**, sayfada şöyle duruyor:
+
+```
+- `cart.carts` — kaynakta bir çağrı ifadesi yok (veri kenarı ya da arayüzden
+  implementasyona geçiş), çağrı yeri kaydedilmedi
+```
+
+İki sebep var ve ikisi de meşru: arayüz→implementasyon kenarı DI çözümü, tablo kenarı EF
+modelinden geliyor. İkisi de kaynakta bir `invocation` değil, ve uydurulmuş bir konum kabul
+edilmiş bir boşluktan kötü olurdu.
+
+**Tek adımlı grupta numara basılmıyor.** Yalnız "1" yazan bir ok, okuyucunun arayıp
+bulamayacağı bir "2" ima eder. Numaralandırma *"hangi sırayla"* sorusunu cevaplar; tek konumun
+sırası yoktur.
+
+### 11.6 İki mutasyon koşusu — ve birincisinin bulduğu şey
+
+**Mutasyon 1 (ilk deneme) testi kırmadı** ve bu bir bulguydu: komşuluk sıralamasını alfabetiğe
+döndürmek çıktıyı değiştirmedi, çünkü kardeş sırasını **çıkıştaki son sıralama** üretiyor.
+Komşuluk sıralaması yalnız tie-break'in hangi adayı kazandığını etkiliyor (§2'nin dersi). İkisi
+ayrı sebeplerle gerekli.
+
+| Mutasyon | Sonuç |
+|---|---|
+| Çıkış sıralaması → alfabetik | `SiblingsAreOrderedBySourceNotByName` **düştü**: `[14, 33, 34, 14, 33, 34]` — sınıfa göre gruplanmış sıra |
+| Numaralandırma → kenar başına (`1..n`) | `NoFlowShowsMoreStepsThanTheSourceHasCallSites` **düştü**, **13 grubu isimle ve sayıyla** bildirerek |
+
+İkinci mutasyonun raporu:
+
+```
+13 grup kaynakta olmayan adım gösteriyor:
+  POST /api/ordering/checkout · CheckoutHandler.HandleAsync: 17 numara, 11 çağrı yeri
+  POST /api/ordering/orders/{id:guid}/cancel · CancelOrderHandler.HandleAsync: 9 numara, 5 çağrı yeri
+  DELETE /api/cart/items/{productId:guid} · RemoveItemHandler.HandleAsync: 6 numara, 3 çağrı yeri
+  …
+```
+
+Faz 5'te lazy continuation'da işe yarayan yöntem: testin kuralı değil, **jeneratörü** koruduğunu
+kanıtlıyor.
+
+### 11.7 Graph anlamı değişmedi
+
+`graph.json` şeması büyüdü, içeriği değil: **415 node, 966 kenar** — öncesiyle aynı, kenar kümesi
+küme olarak birebir eşit, diagnostics aynı. Eklenen tek şey kenarların taşıdığı konum bilgisi.
+
+`modules/dependencies.md` **bayt bayt değişmedi**.
+
+---
+
 ## 10. Sayılar
 
 | | |
 |---|---|
-| Test | **198**, 0 atlanan, 73 s |
+| Test | **206**, 0 atlanan, 48 s |
 | Üretilen dosya | 37 |
 | Determinizm | 37/37 byte-identical |
 | Mermaid parse | 26/26 |
@@ -602,3 +737,6 @@ sayıları bu yüzden `docs/` altında üretilmiş dosyalardan alındı.
 | mermaid.live bağlantısı | 25 / 25 akış sayfası, round-trip 25/25 (C# + node) |
 | En uzun bağlantı | 2678 karakter (checkout) |
 | Ortalama diyagram | 6,4 node |
+| Kaynak sırası | 36 kardeş grubu, 69 numaralı adım, 13'ü (%19) koşullu |
+| Bir çağrı → çok kutu | 69 adımın 23'ü birden fazla hedefli |
+| Çağrı yeri kayıtlı | 439 / 512 `CALLS` kenarı · 57'si birden fazla yerde yazılmış |

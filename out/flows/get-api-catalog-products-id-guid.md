@@ -20,6 +20,18 @@ flowchart TD
 ```
 
 
+> **Numaralar kaynak kodda yazılma sırasıdır**, çalışma sırası değil —
+> koşullu dallar, döngüler ve erken `return`'ler ikisini ayırır.
+> **`koşullu` işaretli adımlar hiç koşmayabilir**, ve bir `if`/ternary'nin iki
+> dalındaki adımlar birbirini dışlar — ikisi birden koşmaz.
+> Aynı numarayı taşıyan kutular **tek bir çağrıdan** gelir.
+
+## Çağrı sırası
+
+**GetProductByIdHandler.HandleAsync** — `src/Modules/Catalog/ModularCommerce.Catalog.Application/Products/GetProductById/GetProductByIdHandler.cs:10`
+
+1. `GetProductByIdHandler.cs:15` → `CachingProductQueries.GetProductByIdAsync`, `ProductQueries.GetProductByIdAsync`
+
 ## Veri katmanı
 
 | Tablo | Erişim | Kolonlar | Tanım |

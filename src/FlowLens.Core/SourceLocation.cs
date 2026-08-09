@@ -13,6 +13,21 @@ public static class SourceLocation
     public static (string FilePath, int Line) For(SyntaxNode node, string solutionDirectory) =>
         FromLocation(node.GetLocation(), solutionDirectory);
 
+    /// <summary>
+    /// With the column, which is what separates two calls written on one line. Measured need:
+    /// CreateProductHandler.cs:21 invokes Product.Create and Money.Create on the same line, so a
+    /// file+line key leaves their order to the tie-break that follows rather than to the source.
+    /// </summary>
+    public static (string FilePath, int Line, int Column) WithColumn(SyntaxNode node, string solutionDirectory)
+    {
+        var location = node.GetLocation();
+        var (path, line) = FromLocation(location, solutionDirectory);
+
+        return line == 0
+            ? (path, 0, 0)
+            : (path, line, location.GetLineSpan().StartLinePosition.Character + 1);
+    }
+
     public static (string FilePath, int Line) For(SyntaxToken token, string solutionDirectory) =>
         FromLocation(token.GetLocation(), solutionDirectory);
 

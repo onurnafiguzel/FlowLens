@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace FlowLens.Core;
@@ -88,7 +89,7 @@ public sealed class CallGraphWalker(
     private readonly TraversalOptions _options = options ?? new TraversalOptions();
 
     private readonly Dictionary<string, Node> _nodes = new(StringComparer.Ordinal);
-    private readonly HashSet<(string From, string To, EdgeKind Kind)> _edgeKeys = [];
+    private readonly Dictionary<(string From, string To, EdgeKind Kind), int> _edgeIndex = [];
     private readonly List<Edge> _edges = [];
     private readonly List<string> _warnings = [];
     private readonly List<RaisedEvent> _internalDomainEvents = [];
@@ -296,7 +297,18 @@ public sealed class CallGraphWalker(
 
             var ambiguousCall = info.Symbol is null;
             var targetId = AddMethodNode(target, item.Depth + 1, ambiguous: ambiguousCall);
-            AddEdge(item.NodeId, targetId, EdgeKind.Calls, ambiguous: ambiguousCall);
+
+            // Where the call is WRITTEN. The node's own line is the callee's declaration, which is
+            // a different question and the one the diagram was silently answering before.
+            var site = SourceLocation.WithColumn(invocation, solutionDirectory);
+
+            AddEdge(
+                item.NodeId,
+                targetId,
+                EdgeKind.Calls,
+                ambiguous: ambiguousCall,
+                callSite: new CallSite(
+                    site.FilePath, site.Line, site.Column, IsConditional(invocation, item.Body)));
 
             if (ImplementationResolver.NeedsResolution(target))
             {
@@ -306,6 +318,49 @@ public sealed class CallGraphWalker(
 
             EnqueueBody(target, targetId, item.Depth + 1, queue);
         }
+    }
+
+    /// <summary>
+    /// Whether the invocation sits inside a branch, walking up to the method body and no further.
+    /// <para>
+    /// Source order says what is written, never what runs. This flag marks the places where the two
+    /// come apart most sharply: a step under a ternary or an <c>if</c> may not run at all, and two
+    /// steps under the arms of one ternary exclude each other. Reported rather than reasoned about -
+    /// deciding WHICH arm runs would be data-flow analysis, which is out of scope by design.
+    /// </para>
+    /// </summary>
+    private static bool IsConditional(SyntaxNode invocation, SyntaxNode body)
+    {
+        for (var node = invocation.Parent; node is not null && node != body; node = node.Parent)
+        {
+            switch (node)
+            {
+                case ConditionalExpressionSyntax:
+                case IfStatementSyntax:
+                case ElseClauseSyntax:
+                case SwitchStatementSyntax:
+                case SwitchExpressionSyntax:
+                case SwitchExpressionArmSyntax:
+                case CatchClauseSyntax:
+                case ConditionalAccessExpressionSyntax:
+                    return true;
+
+                // Only the right-hand side is short-circuited; the left always runs.
+                case BinaryExpressionSyntax binary
+                    when binary.IsKind(SyntaxKind.LogicalAndExpression)
+                        || binary.IsKind(SyntaxKind.LogicalOrExpression)
+                        || binary.IsKind(SyntaxKind.CoalesceExpression):
+
+                    if (binary.Right.Span.Contains(invocation.Span))
+                    {
+                        return true;
+                    }
+
+                    break;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -474,14 +529,30 @@ public sealed class CallGraphWalker(
         EdgeKind kind,
         bool ambiguous = false,
         string? evidence = null,
-        EdgeMechanism mechanism = EdgeMechanism.None)
+        EdgeMechanism mechanism = EdgeMechanism.None,
+        CallSite? callSite = null)
     {
-        if (!_edgeKeys.Add((from, to, kind)))
+        // One edge per (from, to, kind) - but a call written three times is still written three
+        // times. Before call sites existed the repeat was simply dropped; now it is merged, so the
+        // count survives even though the edge does not multiply.
+        if (!_edgeIndex.TryAdd((from, to, kind), _edges.Count))
         {
+            if (callSite is not null)
+            {
+                var at = _edgeIndex[(from, to, kind)];
+                var known = _edges[at].CallSites;
+
+                if (!known.Contains(callSite))
+                {
+                    _edges[at] = _edges[at] with { CallSites = [.. known, callSite] };
+                }
+            }
+
             return;
         }
 
-        _edges.Add(new Edge(from, to, kind, evidence, ambiguous, mechanism));
+        _edges.Add(new Edge(
+            from, to, kind, evidence, ambiguous, mechanism, callSite is null ? [] : [callSite]));
     }
 
     private void MarkTruncated(string nodeId)

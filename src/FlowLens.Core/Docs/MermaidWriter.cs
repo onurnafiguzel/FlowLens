@@ -48,9 +48,16 @@ public static class MermaidWriter
 
         builder.AppendLine();
 
+        // The number is the call site's position among this node's calls - source order, and only
+        // where there is more than one outgoing edge to order.
+        var steps = FlowSteps.Numbers(diagram);
+
         foreach (var edge in diagram.Edges)
         {
-            builder.AppendLine(CultureInfo.InvariantCulture, $"  {ids[edge.FromId]} {Arrow(edge)} {ids[edge.ToId]}");
+            var number = steps.TryGetValue((edge.FromId, edge.ToId), out var n) ? n : (int?)null;
+
+            builder.AppendLine(CultureInfo.InvariantCulture,
+                $"  {ids[edge.FromId]} {Arrow(edge, number)} {ids[edge.ToId]}");
         }
 
         var marked = diagram.Nodes.Where(n => n.HasDiagnostic).ToList();
@@ -159,7 +166,7 @@ public static class MermaidWriter
         };
     }
 
-    private static string Arrow(DiagramEdge edge)
+    private static string Arrow(DiagramEdge edge, int? number)
     {
         var head = edge.Kind switch
         {
@@ -168,9 +175,15 @@ public static class MermaidWriter
             _ => "-->",
         };
 
-        return edge.Label.Length == 0
-            ? head
-            : $"{head}|\"{Escape(edge.Label)}\"|";
+        var label = (number, edge.Label.Length) switch
+        {
+            (null, 0) => string.Empty,
+            (null, _) => Escape(edge.Label),
+            (_, 0) => number.Value.ToString(CultureInfo.InvariantCulture),
+            _ => $"{number.Value.ToString(CultureInfo.InvariantCulture)} · {Escape(edge.Label)}",
+        };
+
+        return label.Length == 0 ? head : $"{head}|\"{label}\"|";
     }
 
     /// <summary>
