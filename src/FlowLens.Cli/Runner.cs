@@ -62,6 +62,7 @@ public static class Runner
             CliCommand.Trace when options.TracesGraphFile => "FlowLens - Phase 3 (graph traversal)",
             CliCommand.Trace => "FlowLens - Phase 2 (call chain)",
             CliCommand.Build => "FlowLens - Phase 3 (graph build)",
+            CliCommand.Docs => "FlowLens - Phase 5 (documentation)",
             _ => "FlowLens - Phase 1 (Roslyn warm-up)",
         });
 
@@ -89,6 +90,13 @@ public static class Runner
         if (options.TracesGraphFile)
         {
             return Phase3Commands.Trace(options);
+        }
+
+        // Same rule for docs: the pages are a function of graph.json, so nothing here loads a
+        // solution or runs a build.
+        if (options.Command == CliCommand.Docs)
+        {
+            return DocsCommand.Run(options);
         }
 
         using var loadResult = await LoadAsync(options.SolutionPath);

@@ -15,6 +15,9 @@ public enum CliCommand
 
     /// <summary>Phase 3: build the whole graph and write graph.json.</summary>
     Build,
+
+    /// <summary>Phase 5: generate the documentation site from graph.json.</summary>
+    Docs,
 }
 
 /// <param name="SolutionPath">Empty when tracing over a graph file, which needs no solution.</param>
@@ -31,7 +34,9 @@ public sealed record CliOptions(
     ImplementationPolicy ImplementationPolicy,
     string? GraphPath,
     TraversalDirection Direction,
-    bool IncludeUtility)
+    bool IncludeUtility,
+    string? OutputDirectory = null,
+    string? ModuleFilter = null)
 {
     public const string DefaultGraphPath = "graph.json";
 
@@ -50,6 +55,7 @@ public sealed record CliOptions(
             flowlens build <solution-path> [-o graph.json]  Build the graph. Do this ONCE.
             flowlens trace "<node>"                         What does this reach?  -> tables + columns
             flowlens trace "<node>" --direction backward    What reaches this?     -> entry points
+            flowlens docs -o <dir>                          Mermaid + markdown, from graph.json
 
               e.g.  flowlens build C:\src\ModularCommerce\ModularCommerce.sln
                     flowlens trace "POST /api/ordering/checkout"
@@ -76,6 +82,12 @@ public sealed record CliOptions(
 
         Build options:
           -o, --output <path>   Where to write the graph (default graph.json).
+
+        Docs options:
+          -o, --output <dir>    Where to write the site (default docs-out).
+          --graph <path>        Graph to read (default: searched, see /graph/stats).
+          --endpoint "<route>"  Only this flow. README is NOT written for a filtered run.
+          --module <name>       Only this module and its flows.
 
         Trace options:
           --endpoint "<METHOD /route>"  Endpoint to start from, e.g. "POST /api/ordering/checkout".
@@ -128,6 +140,10 @@ public sealed record CliOptions(
                 command = CliCommand.Build;
                 index = 1;
                 break;
+            case "docs":
+                command = CliCommand.Docs;
+                index = 1;
+                break;
         }
 
         var positional = new List<string>();
@@ -140,6 +156,7 @@ public sealed record CliOptions(
         var implementationPolicy = ImplementationPolicy.AllImplementations;
         string? graphPath = null;
         string? outputPath = null;
+        string? moduleFilter = null;
         var direction = TraversalDirection.Forward;
         var includeUtility = true;
 
@@ -168,6 +185,7 @@ public sealed record CliOptions(
                 case "--implementation-policy":
                 case "--graph":
                 case "--direction":
+                case "--module":
                 case "-o":
                 case "--output":
                 {
@@ -185,6 +203,7 @@ public sealed record CliOptions(
                         case "--demo-method": demo = demo with { MethodName = value }; break;
                         case "--endpoint": endpointSelector = value; break;
                         case "--graph": graphPath = value; break;
+                        case "--module": moduleFilter = value; break;
                         case "-o":
                         case "--output": outputPath = value; break;
                         case "--direction":
@@ -275,7 +294,20 @@ public sealed record CliOptions(
             }
         }
 
-        if (command != CliCommand.Trace || graphPath is null)
+        // Docs reads a built graph and writes files; it never loads a solution, so a solution path
+        // is neither required nor accepted here.
+        if (command == CliCommand.Docs)
+        {
+            solutionPath = null;
+
+            if (argument is not null)
+            {
+                error = "docs takes no positional argument. Use -o <dir> and optionally " +
+                        "--endpoint / --module.";
+                return null;
+            }
+        }
+        else if (command != CliCommand.Trace || graphPath is null)
         {
             if (string.IsNullOrWhiteSpace(solutionPath))
             {
@@ -296,6 +328,8 @@ public sealed record CliOptions(
             implementationPolicy,
             command == CliCommand.Build ? outputPath ?? DefaultGraphPath : graphPath,
             direction,
-            includeUtility);
+            includeUtility,
+            command == CliCommand.Docs ? outputPath : null,
+            moduleFilter);
     }
 }

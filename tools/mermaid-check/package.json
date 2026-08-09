@@ -1,0 +1,14 @@
+{
+  "name": "flowlens-mermaid-check",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Validates generated Mermaid with the same library GitHub renders it with. Test-time only: neither `dotnet build` nor `flowlens docs` depends on Node.",
+  "type": "module",
+  "scripts": {
+    "check": "node check.mjs"
+  },
+  "dependencies": {
+    "jsdom": "30.0.1",
+    "mermaid": "11.16.1"
+  }
+}
