@@ -18,6 +18,9 @@ public enum CliCommand
 
     /// <summary>Phase 5: generate the documentation site from graph.json.</summary>
     Docs,
+
+    /// <summary>Phase 6: turn a stack trace into an incident report. Reads git; never writes.</summary>
+    Triage,
 }
 
 /// <param name="SolutionPath">Empty when tracing over a graph file, which needs no solution.</param>
@@ -36,7 +39,12 @@ public sealed record CliOptions(
     TraversalDirection Direction,
     bool IncludeUtility,
     string? OutputDirectory = null,
-    string? ModuleFilter = null)
+    string? ModuleFilter = null,
+    string? StackTracePath = null,
+    string? RepoPath = null,
+    string? MethodSelector = null,
+    string? ExceptionType = null,
+    bool JsonOutput = false)
 {
     public const string DefaultGraphPath = "graph.json";
 
@@ -56,6 +64,7 @@ public sealed record CliOptions(
             flowlens trace "<node>"                         What does this reach?  -> tables + columns
             flowlens trace "<node>" --direction backward    What reaches this?     -> entry points
             flowlens docs -o <dir>                          Mermaid + markdown, from graph.json
+            flowlens triage --stack-trace <file>            Incident report from a stack trace
 
               e.g.  flowlens build C:\src\ModularCommerce\ModularCommerce.sln
                     flowlens trace "POST /api/ordering/checkout"
@@ -88,6 +97,21 @@ public sealed record CliOptions(
           --graph <path>        Graph to read (default: searched, see /graph/stats).
           --endpoint "<route>"  Only this flow. README is NOT written for a filtered run.
           --module <name>       Only this module and its flows.
+
+        Triage options:
+          --stack-trace <path>  Stack trace file, or - to read stdin.
+          --method "<Type.Method>"  Instead of a trace: name the failing method directly.
+          --exception <Type>    Exception type to record alongside --method.
+          --repo <path>         Target repository for git log. Derived from the stack trace's
+                                absolute paths when omitted; NEVER replaced when given.
+          --graph <path>        Graph to read (default: searched, see /graph/stats).
+          --json                Emit the report as JSON instead of markdown.
+          -o, --output <file>   Write the report to a file instead of stdout.
+
+          Exit 0 = complete, 3 = produced without git (no git, no repo, or git failed),
+                  4 = no frame matched a node.
+          Only "git rev-parse" and "git log" are ever issued. No git write operation exists
+          in this tool.
 
         Trace options:
           --endpoint "<METHOD /route>"  Endpoint to start from, e.g. "POST /api/ordering/checkout".
@@ -144,6 +168,10 @@ public sealed record CliOptions(
                 command = CliCommand.Docs;
                 index = 1;
                 break;
+            case "triage":
+                command = CliCommand.Triage;
+                index = 1;
+                break;
         }
 
         var positional = new List<string>();
@@ -157,6 +185,11 @@ public sealed record CliOptions(
         string? graphPath = null;
         string? outputPath = null;
         string? moduleFilter = null;
+        string? stackTracePath = null;
+        string? repoPath = null;
+        string? methodSelector = null;
+        string? exceptionType = null;
+        var jsonOutput = false;
         var direction = TraversalDirection.Forward;
         var includeUtility = true;
 
@@ -177,6 +210,9 @@ public sealed record CliOptions(
                 case "--no-utility":
                     includeUtility = false;
                     break;
+                case "--json":
+                    jsonOutput = true;
+                    break;
                 case "--demo-project":
                 case "--demo-type":
                 case "--demo-method":
@@ -186,6 +222,10 @@ public sealed record CliOptions(
                 case "--graph":
                 case "--direction":
                 case "--module":
+                case "--stack-trace":
+                case "--repo":
+                case "--method":
+                case "--exception":
                 case "-o":
                 case "--output":
                 {
@@ -204,6 +244,10 @@ public sealed record CliOptions(
                         case "--endpoint": endpointSelector = value; break;
                         case "--graph": graphPath = value; break;
                         case "--module": moduleFilter = value; break;
+                        case "--stack-trace": stackTracePath = value; break;
+                        case "--repo": repoPath = value; break;
+                        case "--method": methodSelector = value; break;
+                        case "--exception": exceptionType = value; break;
                         case "-o":
                         case "--output": outputPath = value; break;
                         case "--direction":
@@ -294,16 +338,25 @@ public sealed record CliOptions(
             }
         }
 
-        // Docs reads a built graph and writes files; it never loads a solution, so a solution path
-        // is neither required nor accepted here.
-        if (command == CliCommand.Docs)
+        // Docs and triage both read a built graph and never load a solution, so a solution path is
+        // neither required nor accepted for either.
+        if (command is CliCommand.Docs or CliCommand.Triage)
         {
             solutionPath = null;
 
             if (argument is not null)
             {
-                error = "docs takes no positional argument. Use -o <dir> and optionally " +
-                        "--endpoint / --module.";
+                error = command == CliCommand.Docs
+                    ? "docs takes no positional argument. Use -o <dir> and optionally " +
+                      "--endpoint / --module."
+                    : "triage takes no positional argument. Use --stack-trace <file> or " +
+                      "--method \"<Type.Method>\".";
+                return null;
+            }
+
+            if (command == CliCommand.Triage && stackTracePath is null && methodSelector is null)
+            {
+                error = "triage needs an input: --stack-trace <file|-> or --method \"<Type.Method>\".";
                 return null;
             }
         }
@@ -329,7 +382,12 @@ public sealed record CliOptions(
             command == CliCommand.Build ? outputPath ?? DefaultGraphPath : graphPath,
             direction,
             includeUtility,
-            command == CliCommand.Docs ? outputPath : null,
-            moduleFilter);
+            command is CliCommand.Docs or CliCommand.Triage ? outputPath : null,
+            moduleFilter,
+            stackTracePath,
+            repoPath,
+            methodSelector,
+            exceptionType,
+            jsonOutput);
     }
 }

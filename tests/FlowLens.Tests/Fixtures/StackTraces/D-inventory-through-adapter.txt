@@ -1,0 +1,30 @@
+# GERCEK — 0c basamak 1/2. Ayni container ve ayni ariza, ama uretimin ulastigi yoldan:
+# StockReservationService (contract adapter) bir IReservationStrategy tutuyor. DI dogrudan
+# implementasyona dagittigi icin ARAYUZ CERCEVESI yigin izinde YOK, graph.ta ise iki dugumun
+# arasinda duruyor. Aray Bu fixture koprü hop.unu (Ö4) test eden tek yakalama.
+Npgsql.PostgresException (0x80004005): 42P01: relation "inventory.stock_audit" does not exist
+   at Npgsql.Internal.NpgsqlConnector.ReadMessageLong(Boolean async, DataRowLoadingMode dataRowLoadingMode, Boolean readingNotifications, Boolean isReadingPrependedMessage)
+   at System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder`1.StateMachineBox`1.System.Threading.Tasks.Sources.IValueTaskSource<TResult>.GetResult(Int16 token)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteNonQuery(Boolean async, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteNonQueryAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteNonQueryAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.Storage.RelationalCommand.ExecuteNonQueryAsync(RelationalCommandParameterObject parameterObject, CancellationToken cancellationToken)
+   at Microsoft.EntityFrameworkCore.RelationalDatabaseFacadeExtensions.ExecuteSqlRawAsync(DatabaseFacade databaseFacade, String sql, IEnumerable`1 parameters, CancellationToken cancellationToken)
+   at ModularCommerce.Inventory.Infrastructure.Persistence.Strategies.NaiveReservationStrategy.ReserveAsync(Guid productId, Int32 quantity, CancellationToken cancellationToken) in C:\Users\USER\source\repos\ModularCommerce\src\Modules\Inventory\ModularCommerce.Inventory.Infrastructure\Persistence\Strategies\NaiveReservationStrategy.cs:line 37
+   at ModularCommerce.Inventory.Infrastructure.Persistence.Strategies.NaiveReservationStrategy.ReserveAsync(Guid productId, Int32 quantity, CancellationToken cancellationToken) in C:\Users\USER\source\repos\ModularCommerce\src\Modules\Inventory\ModularCommerce.Inventory.Infrastructure\Persistence\Strategies\NaiveReservationStrategy.cs:line 50
+   at ModularCommerce.Inventory.Infrastructure.ContractAdapters.StockReservationService.ReserveAsync(Guid productId, Int32 quantity, CancellationToken cancellationToken) in C:\Users\USER\source\repos\ModularCommerce\src\Modules\Inventory\ModularCommerce.Inventory.Infrastructure\ContractAdapters\StockReservationService.cs:line 22
+   at Program.<>c__DisplayClass0_0.<<<Main>$>g__CaptureA|0>d.MoveNext() in C:\Users\USER\AppData\Local\Temp\claude\c--Users-USER-source-repos-FlowLens\c37be435-a610-41b8-80cd-f80abcb3d7d6\scratchpad\capture\Program.cs:line 121
+  Exception data:
+    Severity: ERROR
+    SqlState: 42P01
+    MessageText: relation "inventory.stock_audit" does not exist
+    InternalPosition: 13
+    InternalQuery: INSERT INTO inventory.stock_audit VALUES (NEW."Id")
+    Where: PL/pgSQL function inventory.audit_stock() line 3 at SQL statement
+    File: parse_relation.c
+    Line: 1428
+    Routine: parserOpenTable

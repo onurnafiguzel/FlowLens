@@ -1,0 +1,6 @@
+# GERCEK — 0c basamak 3. Altyapisiz: Money.Add para birimi uyusmazligi.
+# Money.Add graph.ta YOK (yalniz Money.Create var), yani "graph.ta yok" hukmunu gercek bir
+# cercevede tetikliyor.
+System.InvalidOperationException: Farklı para birimleri toplanamaz: TRY + USD.
+   at ModularCommerce.Shared.Kernel.Money.Add(Money other) in C:\Users\USER\source\repos\ModularCommerce\src\Shared\ModularCommerce.Shared.Kernel\Money.cs:line 35
+   at Program.<>c__DisplayClass0_0.<<Main>$>g__CaptureC|2() in C:\Users\USER\AppData\Local\Temp\claude\c--Users-USER-source-repos-FlowLens\c37be435-a610-41b8-80cd-f80abcb3d7d6\scratchpad\capture\Program.cs:line 151

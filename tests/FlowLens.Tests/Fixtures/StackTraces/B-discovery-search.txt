@@ -1,0 +1,25 @@
+# GERCEK — 0c basamak 1/2. pgvector/pgvector:pg17 container, extension kurulu, ama
+# discovery.product_embeddings tablosu yok. ProductVectorRepository.SearchAsync AYNI METODU iki kez
+# gosteriyor (:65 ve :71) — await using dispose yolu. Diagnostic :60 da, cerceve :65 te: negatif vaka.
+Npgsql.PostgresException (0x80004005): 42P01: relation "discovery.product_embeddings" does not exist
+
+POSITION: 60
+   at Npgsql.Internal.NpgsqlConnector.ReadMessageLong(Boolean async, DataRowLoadingMode dataRowLoadingMode, Boolean readingNotifications, Boolean isReadingPrependedMessage)
+   at System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder`1.StateMachineBox`1.System.Threading.Tasks.Sources.IValueTaskSource<TResult>.GetResult(Int16 token)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlDataReader.NextResult(Boolean async, Boolean isConsuming, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlDataSourceCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at Npgsql.NpgsqlDataSourceCommand.ExecuteReader(Boolean async, CommandBehavior behavior, CancellationToken cancellationToken)
+   at ModularCommerce.Discovery.Infrastructure.Persistence.ProductVectorRepository.SearchAsync(Single[] query, Int32 topN, CancellationToken cancellationToken) in C:\Users\USER\source\repos\ModularCommerce\src\Modules\Discovery\ModularCommerce.Discovery.Infrastructure\Persistence\ProductVectorRepository.cs:line 65
+   at ModularCommerce.Discovery.Infrastructure.Persistence.ProductVectorRepository.SearchAsync(Single[] query, Int32 topN, CancellationToken cancellationToken) in C:\Users\USER\source\repos\ModularCommerce\src\Modules\Discovery\ModularCommerce.Discovery.Infrastructure\Persistence\ProductVectorRepository.cs:line 71
+   at Program.<>c__DisplayClass0_0.<<<Main>$>g__CaptureB|1>d.MoveNext() in C:\Users\USER\AppData\Local\Temp\claude\c--Users-USER-source-repos-FlowLens\c37be435-a610-41b8-80cd-f80abcb3d7d6\scratchpad\capture\Program.cs:line 129
+  Exception data:
+    Severity: ERROR
+    SqlState: 42P01
+    MessageText: relation "discovery.product_embeddings" does not exist
+    Position: 60
+    File: parse_relation.c
+    Line: 1428
+    Routine: parserOpenTable

@@ -729,6 +729,40 @@ karşılanmış durumda. Faz 4/5 önceliği.
 
 ---
 
+## L20 — Inline edilen çerçeve yığın izinde yok, graph'ta var
+
+**Durum:** Açık, **ölçüldü**, yapısal. Triage'ın çerçeve doğrulamasını ilgilendirir.
+**Keşfedildiği yer:** Faz 6, adım 0b.
+
+JIT küçük metotları inline eder ve **inline edilen çerçeve yığın izinde görünmez.** Ölçüldü
+(.NET 10.0.9, Release, `A → C → B` zinciri):
+
+| Yapılandırma | sync `A→C→B` | kontrol `A→D[NoInlining]→B` | async `A→C→B` |
+|---|---|---|---|
+| Varsayılan (tiered on) | 3/3 | 3/3 | 3/3 |
+| `TieredCompilation=0` | **1/3** | 2/3 | **3/3** |
+
+Sebebin gerçekten inlining olduğu kontrol grubuyla kanıtlandı: `NoInlining` taşıyan `D` ayakta
+kaldı, aynı şekle sahip `C` kalmadı. **Async zincirler bağışık** — durum makinesinin `MoveNext`'i
+gerçek bir fiziksel çerçeve.
+
+**Etkisi ölçüldü ve küçük değil:** hedefteki 255 metot düğümünün **97'si (%38) senkron**, yani
+düşürülebilir. Ve bunlar tam olarak inline'a en uygun küçük domain yardımcıları
+(`Cart.RemoveItem`, `Money.Add`, `Result.Failure`).
+
+**Sonuç:** ardışık iki çerçeve arasında graph'ta doğrudan kenar olmayabilir, çünkü aradaki çağrı
+yığın izinden düşmüştür. Bu **graph'ın eksikliği değil**, yığın izinin.
+
+**Ne yapıldı:** arayüz köprüsü **genişletilmedi** (2 hop'a çıkarmak, gerçekten çağrı olmayan bir
+yolu "doğrulandı" saydırırdı). Bunun yerine `graph'ta yok` hükmü ikiye ayrıldı: graph N ≥ 2 hop'luk
+bir yol biliyorsa rapor *"atlanmış çerçeve olabilir"* der ve yolun düğümlerini yazar. Bu bir iddia
+değil gözlem — "graph şu yolu biliyor" ölçülebilir; "inline edildi" yalnız olasılıktır.
+
+**Neden tam çözülemez:** hangi metodun inline edildiğini bilmek çalışma zamanı bilgisi gerektirir
+(JIT'in kararı; aynı ikili farklı yapılandırmada farklı davranıyor). Statik analiz bunu göremez.
+
+---
+
 ## L6 — Statik analizin yapısal olarak göremedikleri
 
 **Durum:** Kalıcı sınır. Faz 5 eval setinde kategori olarak ölçülecek.

@@ -267,17 +267,59 @@ Kural hedefin **katmanına** dayanır (node id'sindeki `ModularCommerce.<Modül>
 
 **Ayrıca bulunanlar:** markdown lazy continuation kusuru (10 modül sayfasının 10'unda; parse hatası yok, mermaid kapısı görmez, testler görmez — dosyaları okurken bulundu), ve sezgisel taramanın seçim etkisi (18/18 sanılan oran, kesin ölçümde 13/36).
 
-## Faz 6 — Triage Bot (deterministik)
+## ✅ Faz 6 — Triage Bot *(tamamlandı, LLM YOK)*
 
-**Amaç:** incident'ta "nereye bakacağım" sorusunu otomatikleştirmek. Yeni sistem değil — Faz 4'ün backward traversal'ının farklı bir girdiyle kullanımı.
+`flowlens triage --stack-trace <dosya>` → incident raporu. **270 test**, 5 gerçek yığın izi,
+Faz 5'in bütün kapıları yerinde (37/37 byte-identical, 26/26 parse, `out/` ve `graph.json`
+değişmedi).
 
-1. Input: stack trace (veya exception type + method name)
-2. Proje-içi en üstteki frame'i bul, graph'ta eşleştir
-3. `Backward(symbolId)` → hangi endpoint / consumer / background job'dan ulaşılıyor
-4. `git log --oneline -5 -- <filePath>` → ilgili dosyalardaki son değişiklikler
-5. Çıktı: **incident report** — etkilenen akışlar, tablolar, son commit'ler, muhtemel şüpheliler
+Yeni sistem değil: kökler ve tablolar Faz 4'ün `AnswerBuilder`'ından geliyor — API'nin ve
+dokümantasyon üreticisinin çağırdığı aynı kod. Eklenen tek şey **girdi**.
 
-**SINIR — yapılmayacak:** otomatik branch açma, otomatik fix, herhangi bir git write işlemi. Çıktı bir rapordur, bot bir developer değildir. Gerekçe `docs/design-decisions.md`'ye yazılacak: alert storm'da loop riski, log'lardaki PII, review edilmemiş patch'in yarattığı sahte güven.
+### Ölçümle değişen üç karar
+
+| Karar | Önce | Ölçüm | Sonra |
+|---|---|---|---|
+| "Hata bu akışın 3. adımında" | Faz 5'in adım numarası kullanılır | Hata çerçevesi genellikle **diyagramda yok** — `NaiveReservationStrategy` checkout'ta 20 daraltılmış ara çağrıdan biri | Numara değil, **çerçeve doğrulama tablosu** |
+| Fixture'lar | "üç gerçek yığın izi" | Nasıl üretileceği yazılı değildi; elle yazılan iz parser'ı kendi varsayımına karşı test eder | Gerçek container + hedefin derlenmiş assembly'leri → **5 gerçek, 0 sentetik** |
+| Ardışık çerçeveler bitişiktir | Kenar ya vardır ya yoktur | Inlining üç çerçeveden **ikisini** siliyor; düğümlerin **%38'i** senkron | `graph'ta yok` ikiye ayrıldı: *"atlanmış çerçeve olabilir"* (L20) |
+
+### Dört hüküm, dördü de raporda ayrı
+
+`eşleşti` · `belirsiz` (aday seçilmez) · **`graph'ta yok`** · `proje dışı`.
+
+Üçüncüsü kritik ve **düzenli vaka**: hedefteki 300 kaynak dosyanın **147'sinin** graph'ta hiç
+düğümü yok. Rapor *"FlowLens bu çerçeveyi göremedi"* ile *"bu çağrı yok"* arasını asla
+bulandırmaz — Faz 3'ün *"graph 'dokunmuyor' demez, 'bakamadım' der"* kuralı.
+
+### Arayüz köprüsü — tam 1 hop
+
+Yığın izinde arayüz çerçevesi **yoktur** (DI doğrudan implementasyona dağıtır), graph'ta ise iki
+düğümün arasında durur. Köprü kuralı ölçümden çıkıyor: 73 çağrı-yeri-siz kenarın **72'si**
+arayüz→implementasyon. İki hop'a çıkarmak, gerçekten çağrı olmayan bir yolu "doğrulandı"
+saydırırdı.
+
+### git — kural değil, yüzey
+
+`GitLog` yalnız `rev-parse` ve `log` çıkarabiliyor; keyfi bir git çağrısı kuran kod yolu yok.
+"Git'e yazmıyoruz" bir hatırlama meselesi değil, **çağrılabilir yüzeyin özelliği**.
+
+git başarısızsa rapor **yine üretilir** (graph tarafı git olmadan da geçerli), eksik olan söylenir,
+çıkış kodu `ExitIncomplete = 3`. Yeni exit kodu eklenmedi.
+
+**SINIR — yapılmadı:** otomatik branch açma, otomatik fix, herhangi bir git write işlemi, yeni
+NuGet (LibGit2Sharp), HTTP ucu. Çıktı bir rapordur, bot bir developer değildir. Gerekçeler
+`docs/design-decisions.md` D1–D4: alert storm'da geri besleme döngüsü, log'lardaki PII'nin dışarı
+çıkması, review edilmemiş patch'in yarattığı sahte güven.
+
+### Bir mutasyon testleri kırmadı — ve bu bir bulgu
+
+Arayüz köprüsü 2 hop'a çıkarıldığında **50 testin 50'si geçti**. Testler doğruydu, *popülasyon
+sessizdi*: beş fixture'ın hiçbirinde tam iki gerçek hop uzaklıkta çerçeve çifti yok. Graph'ta bu
+şekilden **310 tane** var. Eksik test fixture'dan değil **graph'tan** vaka seçerek eklendi.
+
+> Faz 5 §11.6'nın bir seviye yukarısı: bir mutasyonun testi kırmaması, testin zayıf olduğunu değil
+> **test popülasyonunun o vakayı içermediğini** de gösterebilir.
 
 ## Faz 7 — Eval set
 

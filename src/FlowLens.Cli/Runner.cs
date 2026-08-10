@@ -63,6 +63,7 @@ public static class Runner
             CliCommand.Trace => "FlowLens - Phase 2 (call chain)",
             CliCommand.Build => "FlowLens - Phase 3 (graph build)",
             CliCommand.Docs => "FlowLens - Phase 5 (documentation)",
+            CliCommand.Triage => "FlowLens - Phase 6 (triage)",
             _ => "FlowLens - Phase 1 (Roslyn warm-up)",
         });
 
@@ -97,6 +98,13 @@ public static class Runner
         if (options.Command == CliCommand.Docs)
         {
             return DocsCommand.Run(options);
+        }
+
+        // And for triage: a stack trace is answered from the graph plus git log. No solution, no
+        // build, no LLM - Phase 4's backward traversal reached through a different door.
+        if (options.Command == CliCommand.Triage)
+        {
+            return TriageCommand.Run(options);
         }
 
         using var loadResult = await LoadAsync(options.SolutionPath);
