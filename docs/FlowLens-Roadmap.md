@@ -267,72 +267,206 @@ Kural hedefin **katmanına** dayanır (node id'sindeki `ModularCommerce.<Modül>
 
 **Ayrıca bulunanlar:** markdown lazy continuation kusuru (10 modül sayfasının 10'unda; parse hatası yok, mermaid kapısı görmez, testler görmez — dosyaları okurken bulundu), ve sezgisel taramanın seçim etkisi (18/18 sanılan oran, kesin ölçümde 13/36).
 
-## ✅ Faz 6 — Triage Bot *(tamamlandı, LLM YOK)*
+## ✅ Faz 6 — Triage Bot *(tamamlandı, deterministik)*
 
-`flowlens triage --stack-trace <dosya>` → incident raporu. **270 test**, 5 gerçek yığın izi,
-Faz 5'in bütün kapıları yerinde (37/37 byte-identical, 26/26 parse, `out/` ve `graph.json`
-değişmedi).
+`flowlens triage --stack-trace <dosya>` → incident report. Yeni doğruluk kaynağı kurulmadı: Faz 4'ün `AnswerBuilder`'ı iki yönde çağrılıyor, üstüne `git log` ekleniyor. **275 test**, 4 gerçek fixture, 0 sentetik.
 
-Yeni sistem değil: kökler ve tablolar Faz 4'ün `AnswerBuilder`'ından geliyor — API'nin ve
-dokümantasyon üreticisinin çağırdığı aynı kod. Eklenen tek şey **girdi**.
+```
+Girdi            exception tipi, mesaj, çerçeve sayısı
+Graph            okunan graph.json YOLU + node/kenar sayısı
+Repo             kök YOLU + nasıl bulundu + HEAD sha
+Hata noktası     node + konum, ya da NEDEN yok
+Çerçeveler       her çerçeve, hükmü, doğrulama tablosuyla
+Giriş noktaları  backward → RootKind gruplu ("3 endpoint + 1 background job")
+Aşağı akış       forward → tablolar, erişim, kolonlar
+Bilinen sınırlar limitations + hata noktasının TAM SATIR isabeti
+Son commit'ler   dosya başına git log --oneline -5 + kaç dosya / kaç satır
+```
 
-### Ölçümle değişen üç karar
+### Üç hüküm — "graph'ta yok" ile "çağrı yok" aynı şey değil
 
-| Karar | Önce | Ölçüm | Sonra |
-|---|---|---|---|
-| "Hata bu akışın 3. adımında" | Faz 5'in adım numarası kullanılır | Hata çerçevesi genellikle **diyagramda yok** — `NaiveReservationStrategy` checkout'ta 20 daraltılmış ara çağrıdan biri | Numara değil, **çerçeve doğrulama tablosu** |
-| Fixture'lar | "üç gerçek yığın izi" | Nasıl üretileceği yazılı değildi; elle yazılan iz parser'ı kendi varsayımına karşı test eder | Gerçek container + hedefin derlenmiş assembly'leri → **5 gerçek, 0 sentetik** |
-| Ardışık çerçeveler bitişiktir | Kenar ya vardır ya yoktur | Inlining üç çerçeveden **ikisini** siliyor; düğümlerin **%38'i** senkron | `graph'ta yok` ikiye ayrıldı: *"atlanmış çerçeve olabilir"* (L20) |
+| Hüküm | Anlamı |
+|---|---|
+| **eşleşti** | node bulundu, id + `file:line` |
+| **graph'ta yok** | proje namespace'i ama node yok — *"FlowLens bu çerçeveyi göremedi"* |
+| **proje dışı** | framework / 3. parti, tek satırda özetlenir |
 
-### Dört hüküm, dördü de raporda ayrı
+Ölçüldü: `src/` altındaki 300 dosyanın **147'sinin** hiç node'u yok. Yani üçüncü hüküm kozmetik değil, ana vaka. Faz 3'ün *"graph 'dokunmuyor' demez, 'bakamadım' der"* kuralının triage'daki karşılığı.
 
-`eşleşti` · `belirsiz` (aday seçilmez) · **`graph'ta yok`** · `proje dışı`.
+### Uygulama öncesi ölçülen üç şey (Adım 0)
 
-Üçüncüsü kritik ve **düzenli vaka**: hedefteki 300 kaynak dosyanın **147'sinin** graph'ta hiç
-düğümü yok. Rapor *"FlowLens bu çerçeveyi göremedi"* ile *"bu çağrı yok"* arasını asla
-bulandırmaz — Faz 3'ün *"graph 'dokunmuyor' demez, 'bakamadım' der"* kuralı.
+**0a — async çerçeve biçimi.** Hatırlananın yarısı yanlış çıktı: async metotlar demangle ediliyor (`StrategyAsync`), ama async **lambda** edilmiyor (`<>c.<<RunAsync>b__0_0>d.MoveNext()`). Parametreler CLR kısa adıyla geliyor (`Int32`, `Single[]`), node id ise C# adıyla (`int`, `float[]`) — takma ad tablosu gerekti.
 
-### Arayüz köprüsü — tam 1 hop
+**0b — inlining çerçeve DÜŞÜRÜYOR.** Release'de üç çerçeveden ikisi silindi; kontrol grubu (`[MethodImpl(NoInlining)]`) ayakta kaldı, yani sebep gerçekten inlining. ModularCommerce'e etkisi: 255 metot düğümünün **97'si (%38) senkron ve risk altında** — tam da inline'a en uygun küçük yardımcılar (`Money.Add`, `Result.Failure`). Async zincirler bağışık.
 
-Yığın izinde arayüz çerçevesi **yoktur** (DI doğrudan implementasyona dağıtır), graph'ta ise iki
-düğümün arasında durur. Köprü kuralı ölçümden çıkıyor: 73 çağrı-yeri-siz kenarın **72'si**
-arayüz→implementasyon. İki hop'a çıkarmak, gerçekten çağrı olmayan bir yolu "doğrulandı"
-saydırırdı.
+Çözüm köprüyü genişletmek **değil**: `graph'ta yok` ikiye ayrıldı. Graph N ≥ 2 hop'luk bir yol biliyorsa *"atlanmış çerçeve olabilir"* denir ve yolun düğümleri yazılır. *"Graph şu yolu biliyor"* ölçülebilir bir olgu; *"inline edildi"* ancak olasılık. **L20.**
 
-### git — kural değil, yüzey
+**0c — fixture merdiveni.** "Gerçek stack trace" iddiası nasıl karşılanacağı yazılmamıştı. Dört basamaklı düşüş kuruldu ve inilen basamak kaydedildi. Sonuç: **4 gerçek, 0 sentetik** — gerçek Postgres/pgvector container'ları üzerinden, ModularCommerce'in derlenmiş DLL'leri referans alınarak, **hedef repoya tek bayt yazılmadan**.
 
-`GitLog` yalnız `rev-parse` ve `log` çıkarabiliyor; keyfi bir git çağrısı kuran kod yolu yok.
-"Git'e yazmıyoruz" bir hatırlama meselesi değil, **çağrılabilir yüzeyin özelliği**.
+> Sentetik bir fixture "en az 2 gerçek" kriterine sayılmaz ve rapor bunu açıkça söyler.
 
-git başarısızsa rapor **yine üretilir** (graph tarafı git olmadan da geçerli), eksik olan söylenir,
-çıkış kodu `ExitIncomplete = 3`. Yeni exit kodu eklenmedi.
+İlk denemede hata `:37` yerine `:16`'ya düştü. Yığın izini düzeltmek yerine **ikinci bir fixture** eklendi (A2) — istenen satırı elde etmek için izi düzenlemek, sentetiği gerçek diye sunmak olurdu. Sonuç: 4 fixture'ın 2'sinde tam-satır isabeti gerçekleşmiyor ve rapor bunu iddia etmiyor.
 
-**SINIR — yapılmadı:** otomatik branch açma, otomatik fix, herhangi bir git write işlemi, yeni
-NuGet (LibGit2Sharp), HTTP ucu. Çıktı bir rapordur, bot bir developer değildir. Gerekçeler
-`docs/design-decisions.md` D1–D4: alert storm'da geri besleme döngüsü, log'lardaki PII'nin dışarı
-çıkması, review edilmemiş patch'in yarattığı sahte güven.
+### Ö5 — diyagram adım numarası kullanılamadı
 
-### Bir mutasyon testleri kırmadı — ve bu bir bulgu
+Faz 5'in `FlowSteps` numaralarını yeniden kullanıp *"hata bu akışın 3. adımında"* demek planlanmıştı. Ölçüm çürüttü: hata çerçevesi genellikle diyagramda yok. `post-api-inventory-reservations.md` **1 adım** gösteriyor, hata ise daraltılan 20 ara çağrıdan birinde. Yerine **çerçeve doğrulama tablosu** geldi — yığın izi zaten çalışma yolunu veriyor, graph'ın kattığı şey onu *doğrulamak*, yeniden uydurmak değil.
 
-Arayüz köprüsü 2 hop'a çıkarıldığında **50 testin 50'si geçti**. Testler doğruydu, *popülasyon
-sessizdi*: beş fixture'ın hiçbirinde tam iki gerçek hop uzaklıkta çerçeve çifti yok. Graph'ta bu
-şekilden **310 tane** var. Eksik test fixture'dan değil **graph'tan** vaka seçerek eklendi.
+### Sınır — çağrılabilir yüzeyle uygulanan kural
 
-> Faz 5 §11.6'nın bir seviye yukarısı: bir mutasyonun testi kırmaması, testin zayıf olduğunu değil
-> **test popülasyonunun o vakayı içermediğini** de gösterebilir.
+`GitLog` yalnız `rev-parse` ve `log` çıkarabiliyor. "Git'e yazmıyoruz" bir yorum değil, **çağrılabilir yüzeyin özelliği**. Gerekçeler `docs/design-decisions.md` D1–D4: alert storm'da geri besleme döngüsü, log'lardaki PII, review edilmemiş yamanın sahte güveni.
 
-## Faz 7 — Eval set
+git başarısız olursa rapor **yine üretilir**, git bölümü hatayı yazar, exit 3. Graph tarafı git olmadan da geçerli; raporu tümden gizlemek elde olan doğru cevabı da atmak olurdu.
 
-**Bu adım opsiyonel değil.** Faz 3, 110 test yeşilken üç sessiz yanlış cevap üretildiğini gösterdi. Testler kodun çalıştığını doğrular; eval set **cevabın doğru olduğunu** doğrular.
+### Test doğruydu, popülasyon sessizdi
 
-- `evals/questions.json` — 20 soru, doğru cevaplar ModularCommerce kaynak kodundan **elle** çıkarılır, FlowLens çıktısına bakmadan
-- Soru dağılımı: 12 kolay/orta akış, 4 event üzerinden modül geçen akış, 4 zor vaka (interface ambiguity, raw SQL, dinamik çağrı)
-- **En az bir EF dışı modül (Discovery) örneklemde olmalı** — Faz 3'te bu atlandığı için iki kategori hiç ölçülmedi
-- Metrikler: recall (öncelikli) ve precision, tablo ve kolon seviyesi ayrı, **EF içi ve EF dışı ayrı raporlanır** — tek bir ortalama, aracın nerede kör olduğunu gizler
-- Başarısızlıklar kategorize edilir: reflection, dynamic dispatch, raw SQL, interface ambiguity, diğer
-- **Meta-test:** eval set F1–F10'un her birini görünür kılmalı; kılmıyorsa eval set yanlıştır
+Mutasyon 2 (köprüyü 1 → 2 hop yapmak) **hiçbir testi kırmadı** — 50 testin 50'si geçti. Sebep: beş fixture'ın hiçbirinde tam iki gerçek hop uzaklıkta çerçeve çifti yoktu. Graph'ta bu şekilden **310 tane** var, ama aradaki düğümler senkron — 0b'nin inline edip düşürdüğü sınıf.
 
-Recall %100 çıkarsa şüphelen — eval set çok kolay demektir.
+| | Faz 5 §11.6 | Faz 6 |
+|---|---|---|
+| Sebep | Test yanlış satırı koruyordu | Test doğru satırı koruyordu, tetikleyecek veri yoktu |
+| Sorulacak soru | *"testim gerçekten neyi koruyor?"* | *"testimi tetikleyecek girdi elimde var mı?"* |
+| Düzeltme | Doğru satırı mutasyona uğrat | Popülasyonu genişlet |
+
+> **Kural:** bir mutasyon testi kırmıyorsa, önce testi değil **popülasyonu** sorgula. Eksik testi fixture'dan değil **graph'tan** seçerek yaz.
+
+Gerekçe: fixture seti bir **örneklem**, graph **popülasyonun kendisi**. Örneklemden test vakası seçmek, örneklemin zaten içerdiği şekilleri test etmektir — tanım gereği hiçbir boşluk bulamaz.
+
+**Bu kural Faz 7'nin doğrudan girdisi:** her eval sorusu için *"bu sorunun yakaladığı hata sınıfından graph'ta kaç örnek var?"* sorulmalı. Sınıf tek örnekliyse eval set o kategoriyi değil, yalnız o örneği ölçüyor.
+
+**Ayrıca:** Faz 5'in markdown kapısı bu fazın koduna taşınınca **ilk koşuda düştü** — aynı sınıf lazy continuation hatası, yeni dosya. Kapı taşındığı için üretilir üretilmez yakalandı; Faz 5'te aynı hatayı dosyaları elle okuyarak bulmuştuk.
+
+## ✅ Faz 7 — Eval set *(tamamlandı, LLM YOK)*
+
+`flowlens eval -o evals/report.md` → **22 soru**, yedi eksende skorlanıyor. Beklenen değerler
+ModularCommerce kaynağından elle çıkarıldı ve `questions.json` **runner yazılmadan önce**
+commit'lendi. **294 test**, 0 atlanan; `graph.json` ve `out/` değişmedi.
+
+### Ölçülen — hiçbir eksende %100 yok
+
+| Eksen | Kapsam | Recall | Precision |
+|---|---|---:|---:|
+| tablo | EF içi | **%97,1** (34/35) | %100 |
+| tablo | EF dışı | **%75,0** (3/4) | %100 |
+| tablo — erişim (R/W) | — | **%83,8** (31/37) | — |
+| kolon-yazma | EF içi | **%81,6** (133/163) | **%96,4** |
+| kolon-yazma | EF dışı | **%75,0** (9/12) | %100 |
+| kolon-okuma | EF dışı | **%0,0** (0/2) | — |
+| kök | — | **%76,5** (26/34) | %100 |
+| event | — | %60,0 (3/5) | %100 |
+| dış depo | — | **%0,0** (0/5) | %0 |
+| sınır kodu | — | %91,7 (11/12) | varlık iddiası |
+
+**Kanıt skoru, üç kova:** `beklenen-mekanizmayla` **142** (%81,1) · `farklı-ama-geçerli` **0** ·
+`bulunamadı` **33** (%18,9). Orta kova boş — F7 için ayrılan kova bu koşuda hiç dolmadı.
+
+**Precision artık %100 değil.** Faz 3 *"precision %100"* diye kayıtlıydı; kolon precision'ı
+**%96,4** — beş fazladan kolon, hepsi L21. Rakam düşmedi, **yanlış soruyla ölçülmüştü** (§L21).
+
+`kolon-yazma` ve `kolon-okuma` **toplanmaz**: `ColumnsByTable` yalnız `Writes` kenarlarına bakıyor,
+dolayısıyla okuma recall'ı yapısal olarak 0. Tek sayıya indirmek yazma recall'ını ilgisiz bir
+sebeple aşağı çeker ve F9'un boyutunu gizler.
+
+### Eval set'in kendi hata payı ölçüldü: 3 düzeltme / 13 doğrulama
+
+Gerçekleşen her kaçırma, rapora yazılmadan önce kaynağa karşı çapraz kontrol edildi.
+
+| | |
+|---|---:|
+| `oracle-doğrulandı` — kaçırma tool'a ait | **13** |
+| `oracle-düzeltildi` — beklenen değer yanlıştı | **3** (önceki tur) |
+
+Üç düzeltmenin üçü de **ayrı commit**, her biri düzeltmeyi çürüten `file:line`'ı mesajında
+taşıyor. *"Beklenen değer çıktıya uydurulmuş mu?"* sorusu tek bir `git log` ile cevaplanıyor.
+
+> Ölçüm aracının hata payı bir varsayım değil, **rapordaki bir satır**. Faz 4'ün *"ölçüm aracı
+> ölçülenin 70 katı gürültü üretebiliyor"* dersinin bu fazdaki karşılığı.
+
+### Eval set kendi iç tutarlılığını sınadı ve tutarsız çıktı
+
+İlk koşunun *"öngörülmedi + gerçekleşti"* kutusundaki tek soru **Q19**'du. Kaçırma tool'da değil
+**oracle'daydı**: Q19 `notification.processed_messages`'ın kök listesinde checkout'u beklemiyordu,
+ama **Q01 aynı köprünün ileri yarısını zaten iddia ediyor** ve o iddia doğrulandı. Aynı köprü
+hakkında iki soru iki farklı şey söylüyordu.
+
+Bunu bulan şey FlowLens'in çıktısı değil, **soru setinin kendi içindeki çelişki** oldu. Faz 1'in
+*"68 proje / doğrusu 66"* dersinin bu fazdaki karşılığı — o zaman hatayı bir insan fark etmişti.
+
+Çelişki taraması sonradan **makineyle** yapıldı: 16 tablonun 6'sının iki yönü de soruluyor, çelişki
+tekti. Kalan **10 tablo çapraz kontrol edilemiyor** — tutarlı oldukları için değil, sınanmadıkları
+için sessizler.
+
+### Kapıyı düzeltmeden önce yazmak bir yerine iki hata buldu
+
+Q06 ilk koşuda *"öngörüldü, gerçekleşmedi"* kutusuna düştü, yani rapor **öngörünün yanlış
+olduğunu** söylüyordu. Değildi: Q06 `F2`/`L17` öngörüyor ama `externalStores`'u hiç **iddia
+etmiyordu** — cevapta oynayabilecek eksen yoktu. Öngörü yanlış değil, **ölçülemezdi**.
+
+Kapı (`EveryPredictedFailureHasAnAxisThatCouldRealiseIt`) **düzeltmeden önce** yazıldı ve 22
+sorunun tamamını taradı: **2 soru, 4 girdi** — Q06 *ve Q01*. Sonra yazsaydım Q06'ya göre
+şekillenir, Q01 sessiz kalırdı.
+
+> Faz 6'nın kuralının soru seti üzerindeki karşılığı: **eksik kapıyı bilinen vakadan değil,
+> popülasyonun tamamından türet.**
+
+### 3×2'nin granülerlik sınırı
+
+Kutuların birimi **soru**, öngörü değil — bir öngörüyü belirli bir kaçırmaya bağlamak graph'ın
+taşımadığı bir eşleme ister. Bunun bedeli ölçüldü: **L23 soru düzeyinde öngörülmüştü, kalem
+düzeyinde değildi.** Q01 yedi sınır öngörüyor ve kaçırma gerçekleşiyor, yani kutu *"teyit"* diyor;
+ama kaybolan `order_lines.UnitPrice`/`Currency` o yedinin **hiçbirine** girmiyordu. Tek tek atıf
+raporun soru soru bölümünden elle yapılabiliyor, kutulardan yapılamıyor.
+
+### Açılan dört yeni sınır
+
+| | Ne | Nasıl bulundu |
+|---|---|---|
+| **L21** | `IdentityByDefault` kolonları `RowInsert`'e giriyor, EF onları yazmıyor | Oracle'ın 7. adımının bağımsız doğrulaması — gerçek Postgres'e karşı EF'in SQL'i |
+| **L22** | Event köprüsü fiziksel yayın noktasına değil raise site'a bağlı | Q15'in beklenen değeri; **bug değil, Faz 2 kararının faturası** |
+| **L23** | Owned koleksiyonun İÇİNDEKİ owned tipin kolonları node olmuyor | Q01'in oracle kontrolü; `ComplexProperty` ve üst düzey `OwnsMany` çalışıyor, kırılan yalnız iç içe olan |
+| **L24** | `raw-sql` uyarısı geri sorularda yapısal olarak çıkmıyor | Q16'nın oracle kontrolü; eşleştirme anahtarı erişilebilirlik, ham SQL'in eksilttiği şey de o |
+
+**L21'in dersi metrik seviyesinde:** Faz 3 precision'ı *"bu kolon migration'da var mı?"* diye
+sormuştu; doğru soru *"bu akış onu yazıyor mu?"* idi. Aynı veriye bakan iki soru, iki farklı cevap.
+
+Dört ders, dört faz, aynı aile:
+
+| Faz | Yeşil görünen | Gerçekte |
+|---|---|---|
+| 5 | mutasyon testi kırmadı | test **yanlış satırı** koruyordu |
+| 6 | mutasyon testi kırmadı | test doğruydu, **popülasyon** sessizdi |
+| **7** | precision **%100** | metrik doğruydu, **soru** yanlıştı |
+| **7** | öngörü *"gerçekleşmedi"* | öngörü yanlış değildi, **ölçülemiyordu** |
+
+### Meta-test ve ölçülemeyenler
+
+F1–F10 + L1–L24 = **34 satır, gerekçesiz boş satır yok.** Soru taşımayan yedi satırın yedisinde de
+gerekçe yazılı: F10 (yapısal, tiple çözülmüş), L2, L8 (invariant), **L10** (4 site ölçüldü, cevap
+düzeyinde etkisi yok), L12 (tek örnek), L14 (ortam), L20 (çalışma zamanı).
+
+Popülasyonu **0** olan sınıflar da satır olarak duruyor, sessizce atlanmıyor: reflection ve
+dynamic dispatch hedef repoda hiç yok.
+
+### Sol-alt kutu boş — ve bu bir başarı değil
+
+Düzeltmelerden sonra öngörülmeyen kaçırma kalmadı. Yani bu koşuda eval FlowLens hakkında sürpriz
+bir şey **bulmadı**; kendi hakkında üç şey buldu. Kutunun boş olması, soruların yalnız öngörülen
+şeyleri bulduğu anlamına da gelebilir — bir sonraki koşuda şüphelenilecek yer burasıdır.
+
+### Faz 8'in girdisi — parite tasarımı
+
+Her soru **iki alan** taşıyor: analistin sorabileceği doğal dil `question` ve çözülmüş `selector`.
+
+```
+Faz 7:  selector → AnswerBuilder → expected
+Faz 8:  question → LLM#1 → selector' → AnswerBuilder → expected     ve ayrıca  selector' ↔ selector
+```
+
+Böylece iki hata kaynağı ayrışır: **hedefleme** (LLM yanlış node seçti) ve **aktarım** (LLM cevabı
+bozdu). Fark yoksa *"LLM bilgi kaybetmiyor"* **ölçülmüş** olur, varsayılmış değil.
+
+Yüzey paritesi zaten bir kapı: `SurfacesAgree` testi HTTP `/trace`'in `AnswerBuilder` ile aynı
+tablo/kolon kümesini verdiğini her koşuda doğruluyor. *"Dar beli ölçmek hepsini ölçer"* bir gerekçe
+değil, **doğrulanan bir olgu**.
 
 ## Faz 8 — Doğal dil arayüzü (opsiyonel, izole)
 
