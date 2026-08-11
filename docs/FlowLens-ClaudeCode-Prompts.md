@@ -28,9 +28,9 @@ Plan mode'da plan hazır olunca üç seçenek sunulur; **"No, keep planning"** i
 - [x] Faz 3 — Graph + tablo/kolon
 - [x] Faz 4 — Deterministik API (LLM yok) ← *durak noktası: kullanılabilir ürün*
 - [x] Faz 5 — Dokümantasyon & görselleştirme (LLM yok)
-- [ ] Faz 6 — Triage Bot (LLM yok) ← **sıradaki**
-- [ ] Faz 7 — Eval set (LLM yok)
-- [ ] Faz 8 — Doğal dil arayüzü *(opsiyonel, izole proje)*
+- [x] Faz 6 — Triage Bot (LLM yok)
+- [x] Faz 7 — Eval set (LLM yok)
+- [ ] Faz 8 — Doğal dil arayüzü *(opsiyonel, izole proje)* ← **sıradaki**
 - [ ] *Faz sonrası:* MCP server · incremental cache · CI entegrasyonu · web arayüzü
 
 > **Faz 4-7'de LLM yok.** Kurumlar kaynak kodunu harici LLM'e göndermek
@@ -676,7 +676,86 @@ edilmemiş patch'in yarattığı sahte güven.
 > sessiz yanlış cevap veriyordu. Testler kodun çalıştığını doğrular;
 > eval set cevabın doğru olduğunu doğrular.
 
-### [UYGULAMA]
+### [KEŞİF]
+
+```
+@docs/FlowLens-Roadmap.md — Faz 7'yi oku.
+@docs/phase3-validation.md — F1..F10 listesini ve §10.3'teki meta-test
+şartnamesini oku.
+@docs/phase-6-notes.md — "Test doğruydu, popülasyon sessizdi" bölümünü oku.
+@docs/known-limitations.md — L1..L20.
+
+Kod yazmadan planını sun. Bu faz LLM kullanmıyor; eval set deterministik
+API/CLI üzerinden koşar.
+
+--- POPÜLASYON KURALI (Faz 6'nın dersi, bu fazın merkezi) ---
+
+Faz 6'da bir mutasyon hiçbir testi kırmadı çünkü beş fixture'ın hiçbirinde
+o şekli tetikleyecek veri yoktu — graph'ta 310 örnek olmasına rağmen.
+Kural: fixture seti bir ÖRNEKLEM, graph POPÜLASYONUN KENDİSİ.
+
+Bu faza uygulanışı: her soru için ÖNCE şunu ölç —
+  "bu sorunun yakaladığı hata sınıfından graph'ta kaç örnek var?"
+
+Sınıf tek örnekliyse eval set o KATEGORİYİ değil, yalnız O ÖRNEĞİ ölçüyor.
+Soru vakaları graph'tan seçilecek, elde olan fixture'lardan değil.
+
+Planında bu ölçümü göster: hangi kategoriden graph'ta kaç örnek var,
+ve seçilen soru o kategorinin temsilcisi mi.
+
+--- ÖNCE CEVAPLA ---
+
+1. Eval set neyi ölçüyor? Aday yüzeyler: CLI trace, HTTP /trace ve
+   /backward, AnswerBuilder doğrudan. Hangisi ve neden? Faz 8 yazılırsa
+   aynı set /ask üzerinden de koşacak ve AYNI sonucu vermeli — bunu
+   şimdiden mümkün kılacak şekilde tasarla.
+
+2. 275 test zaten var. Eval set onları TEKRARLAMAMALI. Farkı tek cümlede
+   yaz: test kodun çalıştığını, eval cevabın doğru olduğunu doğrular.
+   Hangi soru tipleri mevcut testlerle örtüşüyor, onları ele.
+
+3. expected değerleri nasıl üretilecek? KRİTİK: ModularCommerce kaynak
+   kodunu ve Migrations/*.cs'i okuyarak, FlowLens çıktısına BAKMADAN.
+   Bu bir test seti, tool'un çıktısının kopyası değil. Süreci tarif et
+   ve her soru için hangi dosyaları okuduğunu notes'a yazacağını taahhüt et.
+
+4. Kaç soru? Roadmap 20 diyor. Kategori dağılımı ölçüme göre revize
+   edilmeli mi? Zorunlu: en az 2 soru Discovery'den (EF dışı, ham SQL) —
+   Faz 3'te bu atlandığı için iki kategori hiç ölçülmedi.
+
+--- METRİKLER ---
+
+- Recall = bulunan doğru / beklenen        ← ÖNCELİKLİ (eksik kolon,
+                                              fazla kolondan tehlikeli)
+- Precision = bulunan doğru / dönen tüm
+- Tablo seviyesi ve kolon seviyesi AYRI
+- EF içi ve EF dışı AYRI — tek ortalama aracın nerede kör olduğunu gizler
+  (Faz 3: EF içi %90, EF dışı %0, ortalama %82 ikisini de gizliyordu)
+
+--- META-TEST ---
+
+F1..F10 ve L1..L20'nin her biri için: "bu eval set o farkı görünür
+kılıyor mu?" tablosu. Kılmayan varsa eval set eksiktir, soru ekle.
+Faz 3 §10.3'te bunun şartnamesi zaten yazılı.
+
+--- KABUL KRİTERLERİ ---
+
+- evals/questions.json — her soruda expected + category + notes
+  (hangi kaynak dosyalar okundu)
+- Runner çalışıyor, sonuç deterministik (aynı graph → aynı rapor)
+- evals/report.md — genel + kategori bazlı recall/precision, EF içi/dışı
+  ayrı, başarısız her vaka için ne bekleniyordu / ne geldi / neden kaçtı
+- Kaçırma nedenleri kategorize: reflection, dynamic dispatch, raw SQL,
+  interface ambiguity, inlining, diğer
+- Meta-test tablosu dolu
+- Popülasyon ölçümü her kategori için raporlanmış
+- 275 test yeşil kalıyor, out/ ve graph.json DEĞİŞMİYOR
+
+Recall %100 çıkarsa ŞÜPHELEN — eval set çok kolay demektir, zor vaka ekle.
+LLM kullanma, solution yükleyen bir yol önerme.
+```
+
+### [UYGULAMA] — plan mode kullanıyorsan gerek yok
 
 ```
 @docs/FlowLens-Roadmap.md — Faz 7'yi oku.
@@ -732,15 +811,47 @@ Recall %100 çıkarsa ŞÜPHELEN — eval set çok kolay demektir, zor vaka ekle
 
 > **Neden en sonda:** kurumlar kaynak kodunu harici LLM'e göndermek
 > istemiyor; LLM'siz çalışan bir tool doğrudan kurulabilir. Ayrıca LLM
-> doğruluğa hiçbir şey katmıyor — Faz 4 zaten %100 precision veriyor.
-> Bu katman konfor ekliyor ve projenin tezini *gösterilebilir* kılıyor.
+> doğruluğa hiçbir şey katmıyor — Faz 4-7 zaten ölçülmüş bir doğruluk
+> veriyor. Bu katman konfor ekliyor ve projenin tezini *gösterilebilir*
+> kılıyor.
 
 ### [KEŞİF]
 
 ```
 @docs/FlowLens-Roadmap.md — Faz 8'i ve Bölüm 4'teki izolasyon kuralını oku.
+@evals/report.md ve @evals/questions.json — parite tasarımı orada hazır.
+@docs/phase-7-notes.md, @docs/known-limitations.md (L21..L24).
 
-Kod yazmadan planını sun:
+Kod yazmadan planını sun.
+
+--- FAZ 7'DEN GELEN GİRDİLER ---
+
+A) PARİTE TASARIMI HAZIR. Her soru question (doğal dil) ve selector
+   (oracle çözüm) alanlarını AYRI taşıyor. Faz 8'de:
+     question → LLM#1 → selector' → AnswerBuilder → expected
+   ve AYRICA selector' ↔ selector karşılaştırılacak.
+   Böylece iki hata kaynağı ayrışır:
+     - HEDEFLEME: LLM#1 yanlış node seçti
+     - AKTARIM:   LLM#2 cevabı bozdu
+   Yalnız AnswerBuilder'a koşarsan "aynı sonuç" tautoloji olur ve LLM
+   katmanı hiç ölçülmez. Planın bu ayrımı nasıl kuracağını anlat.
+
+B) EVAL SET /ASK ÜZERİNDEN DE KOŞACAK ve deterministik yüzeyle AYNI
+   sonucu vermeli. Fark varsa LLM katmanı bilgi kaybediyor demektir.
+   22 sorunun tamamı koşulacak, örneklem değil.
+
+C) ÖLÇÜLEN SINIRLAR CEVABA YANSIMALI, uydurulmadan ve gizlenmeden:
+   tablo recall EF içi %97,1 / EF dışı %75, kolon-yazma %81,6 / %75,
+   kolon-okuma %0, kök %76,5, event %60, dış depo %0.
+   L24 kritik: geri sorularda "bu tabloya bakamadığım bir yer var"
+   uyarısı YAPISAL OLARAK çıkmıyor. LLM bunu telafi etmeye çalışmasın —
+   olmayan bir uyarıyı uydurmak, eksik listeyi tam göstermekten kötü.
+
+D) FAZ 7'NİN DÜRÜSTLÜK MEKANİZMALARI BURADA DA GEÇERLİ: LLM'in
+   ürettiği hiçbir şey questions.json'a veya expected değerlere
+   dokunamaz. /ask koşusu ayrı bir rapor üretir.
+
+--- Kod yazmadan planını sun ---
 
 --- İZOLASYON (pazarlık konusu değil) ---
 

@@ -335,138 +335,76 @@ Gerekçe: fixture seti bir **örneklem**, graph **popülasyonun kendisi**. Örne
 
 **Ayrıca:** Faz 5'in markdown kapısı bu fazın koduna taşınınca **ilk koşuda düştü** — aynı sınıf lazy continuation hatası, yeni dosya. Kapı taşındığı için üretilir üretilmez yakalandı; Faz 5'te aynı hatayı dosyaları elle okuyarak bulmuştuk.
 
-## ✅ Faz 7 — Eval set *(tamamlandı, LLM YOK)*
+## ✅ Faz 7 — Eval set *(tamamlandı)*
 
-`flowlens eval -o evals/report.md` → **22 soru**, yedi eksende skorlanıyor. Beklenen değerler
-ModularCommerce kaynağından elle çıkarıldı ve `questions.json` **runner yazılmadan önce**
-commit'lendi. **294 test**, 0 atlanan; `graph.json` ve `out/` değişmedi.
+**294 test**, 22 soru, `flowlens eval` byte-identical. `graph.json` ve `out/` değişmedi — bu faz kod değil **ölçüm** üretti.
 
-### Ölçülen — hiçbir eksende %100 yok
+### Neden gerekliydi — ölçülerek
+
+275 test yeşildi ama **hiçbiri recall ölçmüyordu.** Domain gerçeği iddia eden testler `Assert.Contains` ile yazılmış, yani **çapa** — bir çapa listede olmayanı asla göremez. Bu projede bulunan her ciddi hatanın biçimi tam olarak eksiklikti.
+
+> Testler kodun **çalıştığını** doğrular; eval set cevabın **doğru ve tam olduğunu**.
+
+### Ölçülen sonuç — hiçbir eksende %100 değil
 
 | Eksen | Kapsam | Recall | Precision |
 |---|---|---:|---:|
-| tablo | EF içi | **%97,1** (34/35) | %100 |
-| tablo | EF dışı | **%75,0** (3/4) | %100 |
-| tablo — erişim (R/W) | — | **%83,8** (31/37) | — |
-| kolon-yazma | EF içi | **%81,6** (133/163) | **%96,4** |
-| kolon-yazma | EF dışı | **%75,0** (9/12) | %100 |
-| kolon-okuma | EF dışı | **%0,0** (0/2) | — |
-| kök | — | **%76,5** (26/34) | %100 |
-| event | — | %60,0 (3/5) | %100 |
-| dış depo | — | **%0,0** (0/5) | %0 |
-| sınır kodu | — | %91,7 (11/12) | varlık iddiası |
+| tablo | EF içi | %97,1 | %100 |
+| tablo | EF dışı | %75,0 | %100 |
+| tablo (erişim R/W) | — | %83,8 | — |
+| kolon-yazma | EF içi | %81,6 | %96,4 |
+| kolon-yazma | EF dışı | %75,0 | %100 |
+| **kolon-okuma** | — | **%0,0** | — |
+| kök | — | %76,5 | %100 |
+| event | — | %60,0 | %100 |
+| **dış depo** | — | **%0,0** | %0 |
 
-**Kanıt skoru, üç kova:** `beklenen-mekanizmayla` **142** (%81,1) · `farklı-ama-geçerli` **0** ·
-`bulunamadı` **33** (%18,9). Orta kova boş — F7 için ayrılan kova bu koşuda hiç dolmadı.
+`kolon-yazma` ve `kolon-okuma` **toplanmaz**: `ColumnsByTable` yalnız `Writes` kenarlarına bakıyor, dolayısıyla okunan kolonun recall'ı yapısal olarak 0. İkisini tek sayıya indirmek yazma recall'ını ilgisiz bir sebeple aşağı çeker ve F9'un boyutunu gizlerdi.
 
-**Precision artık %100 değil.** Faz 3 *"precision %100"* diye kayıtlıydı; kolon precision'ı
-**%96,4** — beş fazladan kolon, hepsi L21. Rakam düşmedi, **yanlış soruyla ölçülmüştü** (§L21).
+**Kanıt skoru üç kova** — doğru cevap ile doğru sebep aynı şey değil: `beklenen-mekanizmayla` 142 (%81,1) · `farklı-ama-geçerli` 0 · `bulunamadı` 33 (%18,9).
 
-`kolon-yazma` ve `kolon-okuma` **toplanmaz**: `ColumnsByTable` yalnız `Writes` kenarlarına bakıyor,
-dolayısıyla okuma recall'ı yapısal olarak 0. Tek sayıya indirmek yazma recall'ını ilgisiz bir
-sebeple aşağı çeker ve F9'un boyutunu gizler.
+### Asıl bulgu tool'da değil, eval set'in kendisinde
 
-### Eval set'in kendi hata payı ölçüldü: 3 düzeltme / 13 doğrulama
+Sol-alt kutu (öngörülmedi + gerçekleşti) **ilk koşuda doluydu** (Q19), çapraz kontrol onun bir **oracle hatası** olduğunu gösterdi ve kutu boşaldı. Yani bu fazın bulguları tool'un kaçırmalarında değil — üç oracle düzeltmesinde ve dört yeni sınırda.
 
-Gerçekleşen her kaçırma, rapora yazılmadan önce kaynağa karşı çapraz kontrol edildi.
+**Q01 ↔ Q19 çelişkisi.** Q01, checkout'un forward'ında `notification.processed_messages`'i bekliyor ve buluyor. Q19 aynı tablonun kök kümesine `endpoint: []` yazmıştı. Aynı köprü ters yönde çalıştığında checkout'un o kümede olması zorunlu — **iki soru aynı köprü hakkında iki farklı şey iddia ediyordu.** Çelişki tool'da değil oracle'daydı. Eval set kendi iç tutarlılığını sınadı ve tutarsız çıktı.
 
-| | |
-|---|---:|
-| `oracle-doğrulandı` — kaçırma tool'a ait | **13** |
-| `oracle-düzeltildi` — beklenen değer yanlıştı | **3** (önceki tur) |
+**Eksen kapısı iki hatayı koşudan değil kapıdan buldu.** `EveryPredictedFailureHasAnAxisThatCouldRealiseIt` — her `expectedToFail` girdisi için o sınırın etkileyeceği eksen `expected`'da var mı? Q06 ve Q01'de `externalStores` hiç yoktu, yani `F2/L17` öngörüsü **gerçekleşemezdi**. 3×2 buna "öngörü baştan yanlıştı" diyordu; doğrusu **"öngörü ölçülemedi"**.
 
-Üç düzeltmenin üçü de **ayrı commit**, her biri düzeltmeyi çürüten `file:line`'ı mesajında
-taşıyor. *"Beklenen değer çıktıya uydurulmuş mu?"* sorusu tek bir `git log` ile cevaplanıyor.
+**Eval set'in ölçülen hata payı:** 3 düzeltme (Q19, Q06, Q01) + 13 doğrulama. Sıfır değil — **ölçülmüş ve kapatılmış.**
 
-> Ölçüm aracının hata payı bir varsayım değil, **rapordaki bir satır**. Faz 4'ün *"ölçüm aracı
-> ölçülenin 70 katı gürültü üretebiliyor"* dersinin bu fazdaki karşılığı.
+### Dört sınır, hepsi bu fazda açıldı
 
-### Eval set kendi iç tutarlılığını sınadı ve tutarsız çıktı
-
-İlk koşunun *"öngörülmedi + gerçekleşti"* kutusundaki tek soru **Q19**'du. Kaçırma tool'da değil
-**oracle'daydı**: Q19 `notification.processed_messages`'ın kök listesinde checkout'u beklemiyordu,
-ama **Q01 aynı köprünün ileri yarısını zaten iddia ediyor** ve o iddia doğrulandı. Aynı köprü
-hakkında iki soru iki farklı şey söylüyordu.
-
-Bunu bulan şey FlowLens'in çıktısı değil, **soru setinin kendi içindeki çelişki** oldu. Faz 1'in
-*"68 proje / doğrusu 66"* dersinin bu fazdaki karşılığı — o zaman hatayı bir insan fark etmişti.
-
-Çelişki taraması sonradan **makineyle** yapıldı: 16 tablonun 6'sının iki yönü de soruluyor, çelişki
-tekti. Kalan **10 tablo çapraz kontrol edilemiyor** — tutarlı oldukları için değil, sınanmadıkları
-için sessizler.
-
-### Kapıyı düzeltmeden önce yazmak bir yerine iki hata buldu
-
-Q06 ilk koşuda *"öngörüldü, gerçekleşmedi"* kutusuna düştü, yani rapor **öngörünün yanlış
-olduğunu** söylüyordu. Değildi: Q06 `F2`/`L17` öngörüyor ama `externalStores`'u hiç **iddia
-etmiyordu** — cevapta oynayabilecek eksen yoktu. Öngörü yanlış değil, **ölçülemezdi**.
-
-Kapı (`EveryPredictedFailureHasAnAxisThatCouldRealiseIt`) **düzeltmeden önce** yazıldı ve 22
-sorunun tamamını taradı: **2 soru, 4 girdi** — Q06 *ve Q01*. Sonra yazsaydım Q06'ya göre
-şekillenir, Q01 sessiz kalırdı.
-
-> Faz 6'nın kuralının soru seti üzerindeki karşılığı: **eksik kapıyı bilinen vakadan değil,
-> popülasyonun tamamından türet.**
+| | Bulgu |
+|---|---|
+| **L21** | `IdentityByDefault` kolonları `RowInsert`'e dahil ediliyor; EF onları `RETURNING` ile geri okur, INSERT'e yazmaz. Gerçek Postgres container'ında dört vaka koşularak ölçüldü. Faz 3'ün precision'ı **%100 kaydedilmişti — rakam düşmedi, yanlış soruyla ölçülmüştü**: *"migration'da kolon var mı"* sorulmuş, doğrusu *"bu akış onu yazıyor mu"*. |
+| **L22** | Köprü raise site'a atfediyor, fiziksel publish sitesine değil. **Bug değil, Faz 2 kararının faturası** — düzeltme aynı event'e iki `PUBLISHES` kenarı üretir ve her checkout cevabını şişirir. |
+| **L23** | İç içe owned tipin kolonları node olarak **hiç üretilmiyor**. `ComplexProperty` (2 yerde) ve üst düzey `OwnsMany` (3 yerde) çalışıyor; kırılan yalnız `OwnsMany` içindeki `OwnsOne`. Biçim tercihi değil **EF zorunluluğu** — owned koleksiyon içinde `ComplexProperty` desteklenmiyor, sınır ModularCommerce'e özgü değil. |
+| **L24** | `limitations` diagnostics'i alt graftaki **dosyalarla** eşleştiriyor. Ham SQL geri yönde kenar üretmediği için yürüyüş o dosyaya hiç uğramıyor: *"bu tabloya bakamadığım bir yer var"* uyarısı geri sorularda yapısal olarak çıkmıyor — tam da en çok gerektiği soruda. Ters yönde ikinci kusur: dosya eşleşen ama SQL'i o tabloya dokunmayan bir uyarı **yanlış pozitif** üretiyor, ve `sınır kodu` satırı precision hesaplamadığı için hiçbir sayıya yansımıyor. |
 
 ### 3×2'nin granülerlik sınırı
 
-Kutuların birimi **soru**, öngörü değil — bir öngörüyü belirli bir kaçırmaya bağlamak graph'ın
-taşımadığı bir eşleme ister. Bunun bedeli ölçüldü: **L23 soru düzeyinde öngörülmüştü, kalem
-düzeyinde değildi.** Q01 yedi sınır öngörüyor ve kaçırma gerçekleşiyor, yani kutu *"teyit"* diyor;
-ama kaybolan `order_lines.UnitPrice`/`Currency` o yedinin **hiçbirine** girmiyordu. Tek tek atıf
-raporun soru soru bölümünden elle yapılabiliyor, kutulardan yapılamıyor.
+L23, Q01'in **içinden** çıktı: soru düzeyinde "öngörüldü + gerçekleşti" kutusundaydı, kalem düzeyinde öngörülmemiş bir kaçırma taşıyordu. Kutu tablosu doğru okunduğunda bile kalem düzeyindeki bulguları gizleyebilir.
 
-### Açılan dört yeni sınır
+### Dürüstlük mekanizmaları — niyete değil kurala bağlı
 
-| | Ne | Nasıl bulundu |
-|---|---|---|
-| **L21** | `IdentityByDefault` kolonları `RowInsert`'e giriyor, EF onları yazmıyor | Oracle'ın 7. adımının bağımsız doğrulaması — gerçek Postgres'e karşı EF'in SQL'i |
-| **L22** | Event köprüsü fiziksel yayın noktasına değil raise site'a bağlı | Q15'in beklenen değeri; **bug değil, Faz 2 kararının faturası** |
-| **L23** | Owned koleksiyonun İÇİNDEKİ owned tipin kolonları node olmuyor | Q01'in oracle kontrolü; `ComplexProperty` ve üst düzey `OwnsMany` çalışıyor, kırılan yalnız iç içe olan |
-| **L24** | `raw-sql` uyarısı geri sorularda yapısal olarak çıkmıyor | Q16'nın oracle kontrolü; eşleştirme anahtarı erişilebilirlik, ham SQL'in eksilttiği şey de o |
+`questions.json` runner yazılmadan **önce** commit'lendi. Her `expected` değeri `notes.evidence` içinde ModularCommerce `file:line` zinciri taşır (ortalama 6 satır). Öngörülen kaçırmalar **önce** yazıldı — çıktıyı kopyalayarak bir *kaçırma öngörüsü* üretilemez. Oracle verdict'leri **ayrı dosyada** (`evals/oracle-verdicts.json`), çünkü `questions.json`'a yazılsaydı *"beklenen değer çıktıya uyduruldu mu"* sorusu `git diff` ile cevaplanamazdı. Düzeltmeler ayrı commit'lerde, kaynak kanıtı taşıyan mesajlarla — bulunuş biçimleri git geçmişinden okunuyor.
 
-**L21'in dersi metrik seviyesinde:** Faz 3 precision'ı *"bu kolon migration'da var mı?"* diye
-sormuştu; doğru soru *"bu akış onu yazıyor mu?"* idi. Aynı veriye bakan iki soru, iki farklı cevap.
+### Ölçülemeyen sınıflar — sessizce atlanmadı
 
-Dört ders, dört faz, aynı aile:
+`reflection` ve `dynamic-dispatch` popülasyonu **0** (hedef repo kullanmıyor). `inlining` çalışma zamanı olgusu, statik eval göremez. `delegate/Polly` tek örnek — tek örnek bir kategori oluşturmaz. Dördü de raporda **"ölçülemedi"** satırı olarak duruyor; atlanan bir satır "kapsandı" diye okunur.
 
-| Faz | Yeşil görünen | Gerçekte |
-|---|---|---|
-| 5 | mutasyon testi kırmadı | test **yanlış satırı** koruyordu |
-| 6 | mutasyon testi kırmadı | test doğruydu, **popülasyon** sessizdi |
-| **7** | precision **%100** | metrik doğruydu, **soru** yanlıştı |
-| **7** | öngörü *"gerçekleşmedi"* | öngörü yanlış değildi, **ölçülemiyordu** |
+### Üç fazın aynı ailesi
 
-### Meta-test ve ölçülemeyenler
+| Faz | Ders |
+|---|---|
+| 5 | Test **yanlış satırı** koruyordu |
+| 6 | Test doğruydu, **popülasyon** sessizdi |
+| 7 | Öngörü yanlış değildi, **ölçülemiyordu** |
 
-F1–F10 + L1–L24 = **34 satır, gerekçesiz boş satır yok.** Soru taşımayan yedi satırın yedisinde de
-gerekçe yazılı: F10 (yapısal, tiple çözülmüş), L2, L8 (invariant), **L10** (4 site ölçüldü, cevap
-düzeyinde etkisi yok), L12 (tek örnek), L14 (ortam), L20 (çalışma zamanı).
+### Faz 8'e girdi
 
-Popülasyonu **0** olan sınıflar da satır olarak duruyor, sessizce atlanmıyor: reflection ve
-dynamic dispatch hedef repoda hiç yok.
-
-### Sol-alt kutu boş — ve bu bir başarı değil
-
-Düzeltmelerden sonra öngörülmeyen kaçırma kalmadı. Yani bu koşuda eval FlowLens hakkında sürpriz
-bir şey **bulmadı**; kendi hakkında üç şey buldu. Kutunun boş olması, soruların yalnız öngörülen
-şeyleri bulduğu anlamına da gelebilir — bir sonraki koşuda şüphelenilecek yer burasıdır.
-
-### Faz 8'in girdisi — parite tasarımı
-
-Her soru **iki alan** taşıyor: analistin sorabileceği doğal dil `question` ve çözülmüş `selector`.
-
-```
-Faz 7:  selector → AnswerBuilder → expected
-Faz 8:  question → LLM#1 → selector' → AnswerBuilder → expected     ve ayrıca  selector' ↔ selector
-```
-
-Böylece iki hata kaynağı ayrışır: **hedefleme** (LLM yanlış node seçti) ve **aktarım** (LLM cevabı
-bozdu). Fark yoksa *"LLM bilgi kaybetmiyor"* **ölçülmüş** olur, varsayılmış değil.
-
-Yüzey paritesi zaten bir kapı: `SurfacesAgree` testi HTTP `/trace`'in `AnswerBuilder` ile aynı
-tablo/kolon kümesini verdiğini her koşuda doğruluyor. *"Dar beli ölçmek hepsini ölçer"* bir gerekçe
-değil, **doğrulanan bir olgu**.
+Parite tasarımı hazır: her soru `question` (doğal dil) ve `selector` (oracle çözüm) alanlarını **ayrı** taşıyor. Faz 8'de `question → LLM#1 → selector' → AnswerBuilder → expected` koşulacak **ve ayrıca** `selector' ↔ selector` karşılaştırılacak. Böylece iki hata kaynağı ayrışır: **hedefleme** (LLM yanlış node seçti) ve **aktarım** (LLM cevabı bozdu). Fark yoksa "LLM bilgi kaybetmiyor" ölçülmüş olur, varsayılmış değil.
 
 ## Faz 8 — Doğal dil arayüzü (opsiyonel, izole)
 
