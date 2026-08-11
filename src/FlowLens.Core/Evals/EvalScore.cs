@@ -260,6 +260,10 @@ public static class EvalScore
         ("L13", ["Q01", "Q06"]),
         ("L15", ["Q01", "Q13", "Q21"]),
         ("L16", ["Q01", "Q02", "Q03", "Q13", "Q14"]),
+
+        // L24 is visible through Q16's limitations expectation, not through a prediction: the
+        // question asserts that a backward answer must carry the raw-sql warning, and it does not.
+        ("L24", ["Q16"]),
     ];
 
     /// <summary>
@@ -324,7 +328,7 @@ public static class EvalScore
         var blanks = ReasonedBlanks.ToDictionary(b => b.Id, b => b.Reason, StringComparer.Ordinal);
 
         var ids = Enumerable.Range(1, 10).Select(i => $"F{i}")
-            .Concat(Enumerable.Range(1, 23).Select(i => $"L{i}"))
+            .Concat(Enumerable.Range(1, 24).Select(i => $"L{i}"))
             .ToList();
 
         return

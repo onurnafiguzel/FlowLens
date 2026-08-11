@@ -938,6 +938,74 @@ Bir site, iki kolon. Bu sınırı gösteren eval sorusu (Q01) **kategoriyi deği
 
 ---
 
+## L24 — `raw-sql` uyarısı geri sorularda yapısal olarak çıkmıyor
+
+**Durum:** Açık, **ölçüldü**, **düzeltilebilir**.
+**Keşfedildiği yer:** Faz 7, Q16'nın (`discovery.product_embeddings` geri sorusu) oracle kontrolü.
+**Sınıf:** F6/L6 kapsamında ama **mekanizması ayrı** — o yüzden ayrı kayıt.
+
+### Mekanizma
+
+`Limitations`, build diagnostics'ini cevabın **ulaştığı düğümlerin DOSYALARIYLA eşleştirerek**
+üretiyor (`AnswerBuilder.cs:405,415`): bir diagnostic'in `file:line`'ı alt graftaki bir düğümün
+dosyasıyla örtüşüyorsa, o diagnostic bu cevabın sınırı sayılır.
+
+| Yön | Ne oluyor |
+|---|---|
+| **İleri** | Akış `ProductVectorRepository.cs`'e uğrar (orada bir `Method` düğümü vardır), dosya eşleşir, uyarı çıkar |
+| **Geri** | Ham SQL **kenar üretmediği** için yürüyüş o dosyaya **hiç uğramaz**; eşleşecek dosya yoktur, uyarı çıkmaz |
+
+Yani eksiklik dolaylı bir yan etki değil: eşleştirme anahtarı **erişilebilirlik**, ve ham SQL'in
+tanımı gereği eksik olan şey tam olarak erişilebilirliktir. Kural kendi kör noktasını kullanıyor.
+
+### Neden önemli
+
+Faz 3'ün kuralı şuydu: *"graph 'dokunmuyor' demez, 'bakamadım' der."* Bu kural **geri yönde
+tutmuyor** — ve tam da en çok gerektiği soruda:
+
+```
+"discovery.product_embeddings tablosuna kim dokunuyor?"
+  → 5 kök listeleniyor
+  → POST /api/discovery/search LİSTEDE YOK
+  → ve neden yok olduğunu söyleyen uyarı da YOK
+```
+
+Cevap eksik **ve sessiz**. Bu projede bulunan her ciddi hatanın biçimi buydu.
+
+### Ölçülen popülasyon — 1 kayıp, 1 fazladan
+
+Dört ham SQL diagnostic'i iki dosyada; dokundukları tablolar `discovery.product_embeddings`
+(`ProductVectorRepository.cs:26,40,60`) ve `inventory.stock_items`
+(`NaiveReservationStrategy.cs:37`). 16 tablonun geri yürüyüşü tarandı:
+
+| Tablo | Geri yürüyüş ham SQL dosyasına uğruyor mu | Sonuç |
+|---|---|---|
+| `discovery.product_embeddings` | **hayır** | **uyarı kayboluyor** — sınıfın tek örneği |
+| `inventory.stock_items` | evet (`NaiveReservationStrategy.cs`) | uyarı çıkıyor, doğru |
+| `inventory.reservations` | evet (`NaiveReservationStrategy.cs`) | ⚠ uyarı çıkıyor ama **o dosyadaki ham SQL bu tabloya dokunmuyor** |
+| diğer 13 | hayır | ham SQL zaten ilgisiz |
+
+`inventory.stock_items` kurtuluyor çünkü `NaiveReservationStrategy` aynı gövdede EF ile de okuma
+yapıyor (`context.StockItems...FirstOrDefaultAsync`, `context.Reservations.Add`) — yani düğüm alt
+grafta **başka bir sebeple** var. Tesadüf, kuralın çalışması değil.
+
+`inventory.reservations` ise ters kusuru gösteriyor: aynı dosya eşleştiği için uyarı çıkıyor, ama
+`NaiveReservationStrategy.cs:37`'deki SQL `stock_items`'ı yazıyor, `reservations`'ı değil. Dosya
+düzeyi eşleştirme hem **zayıf** (kaybediyor) hem **kaba** (fazladan takıyor).
+
+### Düzeltme yolu
+
+Diagnostic'i dosyaya değil, **taşıdığı tabloya** bağlamak gerekirdi — ama tablo adı ham SQL
+metninden çıkar ve SQL parse etmek roadmap'te yasak. Yapılabilecek olan daha dar: ham SQL
+diagnostic'ini üreten **metodun düğümünü** işaretlemek ve geri yürüyüşte o işareti aramak; metot
+zaten graph'ta (`ProductVectorRepository.SearchAsync` bir `Method` düğümü). Böylece eşleştirme
+erişilebilirliğe değil **düğüm kimliğine** dayanır ve ham SQL'in kör noktasından etkilenmez.
+
+Faz 7'de yapılmadı: `graph.json`'ı ya da `AnswerBuilder`'ın çıktısını değiştirir, ve bu fazın
+kapısı ikisinin de değişmemesini şart koşuyor.
+
+---
+
 ## L6 — Statik analizin yapısal olarak göremedikleri
 
 **Durum:** Kalıcı sınır. Faz 5 eval setinde kategori olarak ölçülecek.

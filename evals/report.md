@@ -494,7 +494,7 @@ Gerçekleşen kaçırmalar:
 - kok: GET /api/ordering/orders/{id:guid}
 - kok: ReservationTtlSweeper.ExecuteAsync
 
-## 7. Meta-test — F1..F10 ve L1..L23
+## 7. Meta-test — F1..F10 ve L1..L24
 
 Boş satır, gerekçesi yazılmadıkça eval set'in eksik olduğu anlamına gelir.
 
@@ -533,6 +533,7 @@ Boş satır, gerekçesi yazılmadıkça eval set'in eksik olduğu anlamına geli
 | L21 | Q01, Q02 | — |
 | L22 | Q15 | — |
 | L23 | Q01 | — |
+| L24 | Q16 | — |
 
 ## 8. Ölçülemeyen sınıflar
 

@@ -322,7 +322,7 @@ public sealed class EvalScoreTests : IClassFixture<EvalFixture>
     }
 
     /// <summary>
-    /// F1..F10 and L1..L23, every row either naming a question or carrying the reason it cannot.
+    /// F1..F10 and L1..L24, every row either naming a question or carrying the reason it cannot.
     /// A silent gap here is the shape of the four silent errors Phase 3 shipped.
     /// </summary>
     [Fact]
@@ -331,7 +331,7 @@ public sealed class EvalScoreTests : IClassFixture<EvalFixture>
         var card = _fixture.Score();
 
         var expectedIds = Enumerable.Range(1, 10).Select(i => $"F{i}")
-            .Concat(Enumerable.Range(1, 23).Select(i => $"L{i}"))
+            .Concat(Enumerable.Range(1, 24).Select(i => $"L{i}"))
             .ToList();
 
         Assert.Equal(expectedIds, card.Meta.Select(m => m.Id).ToList());
