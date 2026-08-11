@@ -763,6 +763,123 @@ değil gözlem — "graph şu yolu biliyor" ölçülebilir; "inline edildi" yaln
 
 ---
 
+## L21 — `IdentityByDefault` kolonları `RowInsert`'e dahil ediliyor; EF onları yazmıyor
+
+**Durum:** Açık, **ölçüldü**, **düzeltilebilir**. Faz 7 sonrası ayrı iş olarak sıraya alındı.
+**Keşfedildiği yer:** Faz 7, eval oracle'ının 7. adımının bağımsız doğrulaması.
+**Sınıf:** **precision** kusuru — bu projede ölçülen ilk precision kusuru.
+
+`DataLayerOverlay`'in satır düzeyi kuralı (L16/F3) bir INSERT'te tablonun **kalan tüm kolonlarına**
+`RowInsert` mekanizmasıyla W kenarı üretiyor ve `IsRowVersion` olanları **eliyor**. Ama aynı
+gerekçeye sahip ikinci bir aile elenmiyor: **değeri veritabanının ürettiği identity kolonları.**
+
+EF ikisini de INSERT cümlesine koymaz — ikisini de `RETURNING` ile geri okur.
+
+### Kanıt — gerçek Postgres 17'ye karşı EF'in ürettiği SQL
+
+Faz 6'nın harness'ıyla (ModularCommerce'in derlenmiş DLL'leri, hedef repoya yazmadan), EF SQL
+logging açık:
+
+```
+INSERT INTO ordering.order_lines ("ProductId","ProductName","Quantity","ReservationId",order_id,"UnitPrice","Currency")
+  VALUES (...) RETURNING id;              ← id INSERT listesinde YOK
+
+INSERT INTO inventory.stock_items ("Id","CreatedAtUtc","OnHand","ProductId","Reserved","UpdatedAtUtc")
+  VALUES (...) RETURNING xmin;            ← xmin INSERT listesinde YOK (bu zaten eleniyor)
+
+UPDATE inventory.stock_items SET "Reserved"=@p0,"UpdatedAtUtc"=@p1
+  WHERE "Id"=@p2 AND xmin=@p3 RETURNING xmin;
+```
+
+Gölge **FK**'lar (`order_id`) INSERT listesinde **var** — onların iddiası doğru. Hata dar bir
+yerde: owned koleksiyonların **sentetik identity PK**'sı.
+
+Model tarafındaki kaynak: `UseIdentityByDefaultColumn(b1.Property<int>("id"))`
+(`OrderingDbContextModelSnapshot.cs:105,148`, `PaymentDbContextModelSnapshot.cs:110`) ve
+migration'da `Npgsql:ValueGenerationStrategy = IdentityByDefaultColumn`
+(`InitialOrderingSchema.cs:40`).
+
+### Ölçülen etki — popülasyon tam olarak 3
+
+Sekiz DbContext'in **tamamı** tarandı; başka identity kolonu yok.
+
+| Kolon | Kenar | Mekanizma |
+|---|---:|---|
+| `ordering.order_lines.id` | 1 | yalnız `RowInsert` |
+| `ordering.order_status_history.id` | 2 | yalnız `RowInsert` |
+| `payment.payment_attempts.id` | 2 | yalnız `RowInsert` |
+
+**3 kolon / 97 · 5 yanlış W kenarı / 109 `RowInsert` kenarı.** Üçü de yalnız `RowInsert` taşıyor,
+yani başka bir kanıtla desteklenmiyorlar — kaldırılmaları başka hiçbir iddiayı düşürmez.
+
+### Düzeltme
+
+`RowInsert` kuralı `IsRowVersion` gibi **veritabanı-üretimli** kolonları da elemeli. Ayırt edici
+test EF'in kendisinde: `ValueGenerated == OnAdd` **ve** kolon bir store-generated strateji taşıyor
+(`IdentityByDefault`/`IdentityAlways`/`Serial`) ise INSERT onu yazmaz. `orders.Id` gibi
+`ValueGeneratedOnAdd` ama **istemcinin doldurduğu** (`Entity.cs:7` `= Guid.NewGuid()`) kolonlar
+etkilenmez — EF onları INSERT'e koyar ve ölçümde de öyle çıktı.
+
+**Faz 7'de düzeltilmedi, bilerek:** düzeltme `graph.json`'ı değiştirir ve Faz 7'nin
+*"`graph.json` DEĞİŞMİYOR"* kapısını kırardı. Eval set bunu **öngörülen** precision kaybı olarak
+raporluyor (`expectedToFail: L21`), sürpriz olarak değil.
+
+> **Neden Faz 3 bunu görmedi.** `phase3-validation.md` §8, eklenen 15 kolonun her birini
+> `Migrations/*.cs`'e karşı doğruladı ve *"15/15 gerçek, precision %100"* yazdı. Doğrulama
+> sorusu **"bu kolon migration'da var mı?"** idi — üçü de var. Doğru soru
+> **"bu akış onu yazıyor mu?"** idi. Aynı veriye bakan iki soru, iki farklı cevap;
+> precision %100 yanlış soruyla ölçülmüştü.
+
+---
+
+## L22 — Event köprüsü fiziksel yayın noktasına değil, raise site'a bağlanır
+
+**Durum:** Açık, **ölçüldü**. **Bug değil — Faz 2'de verilmiş bir tasarım kararının faturası.**
+**Keşfedildiği yer:** Faz 7, eval sorusu Q15 (`OutboxDispatcher`'ın forward'ı).
+
+### Karar ve gerekçesi
+
+Faz 2'de `PUBLISHES` kenarı bilinçli olarak **raise site + registry eşlemesi** üzerine kuruldu
+(L4): `Order.MarkPaid` → `event:...OrderPaid`, kenar üzerinde `raiseSite` ve `mappingSite` kanıtı.
+Fiziksel yayın ise başka bir yerde, `OutboxDispatcher` içinde olur.
+
+Gerekçe impact analizinin sorusundan geliyor. *"`Order.MarkPaid` bu event'i doğurur"* cümlesi bir
+değişikliğin etkisini anlatır; *"dispatcher yayınlar"* cümlesi anlatmaz, çünkü **dispatcher zaten
+her şeyi yayınlar** — ayırt edici bilgi taşımaz. `MarkPaid`'i değiştiren biri `OrderPaid`'in
+tüketicilerini etkiler; dispatcher'ı değiştiren biri hepsini birden etkiler ve bunu zaten bilir.
+
+Ayrıca teknik olarak da mecburi bir tarafı var: iki dispatcher da tip-silinmiş imzayı kullanıyor
+(`Publish(integrationEvent, clrType, cancellationToken)`), yani syntax'tan event tipi çıkmıyor.
+Registry okuması bu yüzden seçildi (L4).
+
+### Ölçülen bedel
+
+Kararın faturası şudur: **`OutboxDispatcher`'ın forward cevabında hiç event çıkmıyor**, oysa
+fiziksel olarak **iki** integration event yayınlıyor.
+
+| | |
+|---|---:|
+| Dispatcher sayısı (popülasyon) | **2** |
+| Her ikisinde de tip-silinmiş `Publish` | 2 / 2 |
+| `OutboxDispatcher`'ın gerçekte yayınladığı event | **2** (`OrderPaid`, `OrderCancelled`) |
+| Forward cevabında görünen | **0** |
+
+Konumlar: `OutboxDispatcher.cs:100`, `CatalogOutboxDispatcher.cs:98`. Çözülebilen tipler
+`OrderingIntegrationEventRegistry.cs:36-37` ve `CatalogIntegrationEventRegistry.cs:34-36`.
+
+### Neden düzeltilmedi
+
+Düzeltmek, aynı event'e **iki** `PUBLISHES` kenarı üretmek demek (raise site + dispatcher) ve
+*"bu akış hangi event'leri yayınlıyor?"* sorusunun cevabını her outbox modülünde ikiye katlamak
+demek. Kazanç dar (bir BackgroundService'in forward'ı), bedel her checkout cevabında.
+
+> Gerekçe burada yazılı olmasaydı, sonradan *"neden düzeltmediniz"* sorusunun cevabı kaybolurdu.
+> Bu bir eksiklik değil, **ölçülmüş bir takas**.
+
+Eval bunu `expectedToFail: L22` ile **öngörülen** kayıp olarak raporluyor.
+
+---
+
 ## L6 — Statik analizin yapısal olarak göremedikleri
 
 **Durum:** Kalıcı sınır. Faz 5 eval setinde kategori olarak ölçülecek.

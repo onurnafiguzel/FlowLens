@@ -1,0 +1,779 @@
+{
+  "version": 1,
+  "phase": 7,
+  "derivedFrom": "ModularCommerce src/** + Migrations/*.cs + EF'in gercek uretilen SQL'i (phase-7-notes.md 1). FlowLens ciktisina bakilmadi; graph.json yalniz SELECTOR adreslemesi icin okundu.",
+  "columnRule": "INSERT satirin tum eslenmis kolonlarini yazar, DEGERI VERITABANININ URETTIGI kolonlar haric (IsRowVersion ve IdentityByDefault). Ayirt edici test: EF onu RETURNING ile geri okuyorsa yazmiyordur. UPDATE yalniz atananlari yazar. DELETE hicbir kolon yazmaz.",
+  "rules": {
+    "absentFieldIsNotAsserted": "expected icinde BULUNMAYAN alan iddia edilmemistir. Bir backward sorusunda 'tables' yoksa tablo kumesi skorlanmaz; bir forward sorusunda 'roots' yoksa kok kumesi skorlanmaz. Bos dizi ile eksik alan AYNI SEY DEGIL: bos dizi 'hicbiri olmamali' iddiasidir (precision sorusu).",
+    "columnScore": "Kolon skoru IKI AYRI SATIR uretir: kolon-yazma ve kolon-okuma. ColumnsByTable yalniz Writes kenarlarina bakiyor (AnswerBuilder.cs:152), yani okunan kolon recall'i yapisal olarak %0; ikisini ayni kovaya koymak toplam kolon recall'ini yanlis asagi ceker ve F9'un gercek boyutunu gizler. columnKind alani hangi satira gidecegini soyler.",
+    "population": "count == 1 olan her soru representative: false tasimak ZORUNDA - o soru kategoriyi degil yalniz o ornegi olcer.",
+    "expectedToFail": "closedIn null ise sinir hala acik (gerceklesirse teyit, gerceklesmezse ONGORU YANLISTI). closedIn dolu ise sinir kapanmisti (gerceklesirse REGRESYON).",
+    "corrections": "Bir oracle-duzeltildi cikarsa bu dosya degisir, ama AYRI bir commit'te ve mesaji duzeltmenin ModularCommerce kaynak kanitini tasiyarak. Runner commit'ine karismaz."
+  },
+  "questions": [
+    {
+      "id": "Q01",
+      "question": "Checkout akisi hangi tablolara ve kolonlara dokunuyor?",
+      "selector": { "node": "POST /api/ordering/checkout", "direction": "forward" },
+      "category": "ef-forward",
+      "population": {
+        "class": "P1",
+        "count": 25,
+        "representative": true,
+        "howCounted": "Graph'taki endpoint sayisi. Tablo dagilimi {0:2, 1:15, 2:4, 3:2, 7:1, 12:1}; Q01-Q08 bu dagilimin her basamagini orkler. Checkout dagilimin ust ucu (12 tablo)."
+      },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "ordering.orders", "access": "RW", "operation": "INSERT", "columns": ["CreatedAtUtc", "CustomerId", "Id", "IdempotencyKey", "Status", "UpdatedAtUtc"] },
+          { "name": "ordering.order_lines", "access": "RW", "operation": "INSERT", "columns": ["Currency", "ProductId", "ProductName", "Quantity", "ReservationId", "UnitPrice", "order_id"] },
+          { "name": "ordering.order_status_history", "access": "RW", "operation": "INSERT", "columns": ["FromStatus", "OccurredAtUtc", "ToStatus", "TriggeredBy", "order_id"] },
+          { "name": "ordering.outbox_messages", "access": "W", "operation": "INSERT", "columns": ["Content", "Error", "Id", "OccurredOnUtc", "ProcessedOnUtc", "RetryCount", "Type"] },
+          { "name": "cart.carts", "access": "RW", "operation": "SELECT+DELETE", "columns": [] },
+          { "name": "catalog.products", "access": "R", "operation": "SELECT", "columns": [] },
+          { "name": "inventory.stock_items", "access": "RW", "operation": "UPDATE", "columns": ["OnHand", "Reserved", "UpdatedAtUtc"] },
+          { "name": "inventory.reservations", "access": "RW", "operation": "INSERT+UPDATE", "columns": ["CreatedAtUtc", "ExpiresAtUtc", "Id", "ProductId", "Quantity", "Status", "StockItemId"] },
+          { "name": "payment.payments", "access": "RW", "operation": "INSERT", "columns": ["Amount", "ClaimedAtUtc", "CompletedAtUtc", "CreatedAtUtc", "Currency", "CustomerId", "FailureCode", "Id", "IdempotencyKey", "Method", "OrderId", "PspTransactionId", "RefundTransactionId", "RefundedAtUtc", "Status"] },
+          { "name": "payment.payment_attempts", "access": "W", "operation": "INSERT", "columns": ["AttemptNumber", "ErrorCode", "LatencyMs", "OccurredAtUtc", "Outcome", "PspTransactionId", "payment_id"] },
+          { "name": "notification.notification_logs", "access": "W", "operation": "INSERT", "columns": ["Channel", "Id", "IdempotencyKey", "OrderId", "Recipient", "SentAtUtc", "Subject"] },
+          { "name": "notification.processed_messages", "access": "RW", "operation": "SELECT+INSERT", "columns": ["ConsumerType", "IdempotencyKey", "MessageId", "ProcessedOnUtc"] }
+        ]
+      },
+      "expectedToFail": [
+        { "id": "L21", "closedIn": null },
+        { "id": "F5", "closedIn": null },
+        { "id": "L16-4", "closedIn": null },
+        { "id": "F2", "closedIn": null },
+        { "id": "L17", "closedIn": null },
+        { "id": "F4", "closedIn": null },
+        { "id": "L19", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "endpoint -> handler -> repository/servis -> DbSet erisimi ya da entity mutasyonu -> configuration ToTable -> migration+snapshot kolon listesi -> operasyon turu kolon kumesini belirler.",
+        "evidence": [
+          "OrderEndpoints.cs:22 (MapPost /checkout -> CheckoutHandler.HandleAsync)",
+          "CheckoutHandler.cs:60,94,134,175 (cart, satir taslagi, ChargeRequest, idempotency)",
+          "Order.cs:107,119,120 (OrderLine insasi, ilk StatusHistory girdisi, OrderCreated)",
+          "OrderConfiguration.cs:29,32,33,52 (OwnsMany Lines, order_id golge FK, sentetik id, OwnsMany StatusHistory)",
+          "20260707143950_InitialOrderingSchema.cs:40 (order_lines.id = IdentityByDefaultColumn)",
+          "20260708144210_AddOutboxMessages.cs (ordering.outbox_messages, 7 kolon)",
+          "DomainEventToOutboxInterceptor.cs:59-64 (outbox satirini SaveChanges icinde yazan tek yer)",
+          "StockItem.cs:80-120 (Reserve/Commit; OnHand, Reserved, UpdatedAtUtc atamalari)",
+          "20260705154708_InitialInventorySchema.cs:20-31,36-48 (reservations 7, stock_items 7 incl. xmin)",
+          "20260708112653_InitialPaymentSchema.cs:22-36,46-57 + 20260708215714_AddPaymentRefund.cs:15-27 (payments 16 incl. xmin, payment_attempts 8 incl. identity id)",
+          "PostgresCartRepository.cs:71-90 (RemoveAsync -> Carts.Remove, tum satir; kolon adlandirmiyor)",
+          "NotificationProcessor.cs:24,42-50,53-59 (processed_messages R, notification_logs INSERT, processed_messages INSERT)",
+          "20260709105702_InitialNotification.cs:20-27,38-43 (notification_logs 7, processed_messages 4)",
+          "phase-7-notes.md 1 (A vakasi: EF'in gercek INSERT kolon listeleri, gercek Postgres 17)"
+        ],
+        "why": "68 kolon tek soruda. payments.RefundedAtUtc INSERT'te NULL olarak yazilir - kolon duserse checkout kirilir, dolayisiyla dogru cevap. order_lines.id / order_status_history.id / payment_attempts.id BEKLENMIYOR: EF onlari RETURNING ile geri okuyor (L21)."
+      }
+    },
+    {
+      "id": "Q02",
+      "question": "Siparis iptali akisi hangi tablolara ve kolonlara dokunuyor?",
+      "selector": { "node": "POST /api/ordering/orders/{id:guid}/cancel", "direction": "forward" },
+      "category": "ef-forward",
+      "population": { "class": "P1", "count": 25, "representative": true, "howCounted": "Ayni endpoint popülasyonu; cancel dagilimin 7-tablo basamagi." },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "ordering.orders", "access": "RW", "operation": "UPDATE", "columns": ["Status", "UpdatedAtUtc"] },
+          { "name": "ordering.order_lines", "access": "R", "operation": "SELECT", "columns": [] },
+          { "name": "ordering.order_status_history", "access": "RW", "operation": "INSERT", "columns": ["FromStatus", "OccurredAtUtc", "ToStatus", "TriggeredBy", "order_id"] },
+          { "name": "ordering.outbox_messages", "access": "W", "operation": "INSERT", "columns": ["Content", "Error", "Id", "OccurredOnUtc", "ProcessedOnUtc", "RetryCount", "Type"] },
+          { "name": "inventory.reservations", "access": "RW", "operation": "UPDATE", "columns": ["Status"] },
+          { "name": "inventory.stock_items", "access": "RW", "operation": "UPDATE", "columns": ["OnHand", "UpdatedAtUtc"] },
+          { "name": "payment.payments", "access": "RW", "operation": "UPDATE", "columns": ["RefundTransactionId", "RefundedAtUtc", "Status"] },
+          { "name": "payment.payment_attempts", "access": "W", "operation": "INSERT", "columns": ["AttemptNumber", "ErrorCode", "LatencyMs", "OccurredAtUtc", "Outcome", "PspTransactionId", "payment_id"] }
+        ]
+      },
+      "expectedToFail": [
+        { "id": "F4", "closedIn": null },
+        { "id": "L19", "closedIn": null },
+        { "id": "F5", "closedIn": null },
+        { "id": "L16-4", "closedIn": null },
+        { "id": "L21", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "Ayni zincir. Fark: UPDATE yalniz ATANAN kolonlari yazar, INSERT tum eslenmis kolonlari.",
+        "evidence": [
+          "OrderEndpoints.cs:61 (MapPost /orders/{id}/cancel)",
+          "CancelOrderHandler.cs:30,38,46,59,68 (yukle, Cancel, satirlari gez, Refund, SaveChanges)",
+          "Order.cs:142-154,158-173 (Cancel -> TransitionTo: Status + UpdatedAtUtc; StatusHistory'ye satir; OrderCancelled)",
+          "StockReservationService.cs:57-62 (ReturnAsync -> StockItem.Return)",
+          "StockItem.cs (Return: OnHand + UpdatedAtUtc; Reservation.MarkReturned: yalniz Status)",
+          "20260708215714_AddPaymentRefund.cs:15-27 (RefundTransactionId, RefundedAtUtc)",
+          "phase-7-notes.md 1 (B vakasi: MarkPaymentPending+MarkPaid -> status_history INSERT, orders UPDATE 2 kolon)"
+        ],
+        "why": "order_lines burada YALNIZ okunuyor (owned auto-include). Tablo listesinde bulunmasi gerekiyor ama W degil R olarak - kayip tek tablo degil, bir KENAR TIPI (L19)."
+      }
+    },
+    {
+      "id": "Q03",
+      "question": "Yeni urun olusturma akisi hangi tablolara ve kolonlara dokunuyor?",
+      "selector": { "node": "POST /api/catalog/products", "direction": "forward" },
+      "category": "ef-forward",
+      "population": { "class": "P1", "count": 25, "representative": true, "howCounted": "Ayni endpoint popülasyonu; 3-tablo basamagi ve modul geciren tek yazma yolu." },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "catalog.products", "access": "W", "operation": "INSERT", "columns": ["CreatedAtUtc", "Description", "Id", "IsActive", "Name", "Sku", "StockQuantity", "UpdatedAtUtc", "price_amount", "price_currency"] },
+          { "name": "catalog.outbox_messages", "access": "W", "operation": "INSERT", "columns": ["Content", "Error", "Id", "OccurredOnUtc", "ProcessedOnUtc", "RetryCount", "Type"] },
+          { "name": "discovery.product_embeddings", "access": "RW", "operation": "SELECT+UPSERT", "columns": ["Embedding", "ProductId", "SourceTextHash", "UpdatedAtUtc"] }
+        ]
+      },
+      "expectedToFail": [
+        { "id": "L5", "closedIn": null },
+        { "id": "L6", "closedIn": null },
+        { "id": "F7", "closedIn": null },
+        { "id": "F5", "closedIn": null },
+        { "id": "L16-4", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "Ayni zincir; product_embeddings icin zincir EF'ten degil HAM SQL METNINDEN geciyor cunku tablonun gercegi orada.",
+        "evidence": [
+          "ProductEndpoints.cs:43 (MapPost /products)",
+          "Product.cs:29-41,65-69 (ctor tum kolonlari doldurur; ProductCreated raise)",
+          "ProductConfiguration.cs:11,29-38 (ToTable products; Money -> price_amount + price_currency)",
+          "ProductRepository.cs:18-22 (Products.Add + SaveChanges -> interceptor)",
+          "20260715122542_AddCatalogOutbox.cs:17-27 (catalog.outbox_messages 7 kolon)",
+          "CatalogIntegrationEventRegistry.cs:20-24 (ProductCreated eslemesi)",
+          "ProductChangedConsumer.cs:15 -> IndexProductHandler.cs:23,42",
+          "ProductVectorRepository.cs:17-24 (UPSERT dort kolonu da yazar), :38 (SELECT SourceTextHash)",
+          "20260715124136_InitialDiscoverySchema.cs:23-35 (EF 3 kolon) + :38-39 (Sql: Embedding vector(1536))"
+        ],
+        "why": "product_embeddings icin expected 4 kolon - fiziksel tablonun gercegi. EF modeli 3 biliyor (ProductEmbeddingConfiguration.cs:21 Ignore). Expected GERCEGI yazar, FlowLens'in gorebildigini degil."
+      }
+    },
+    {
+      "id": "Q04",
+      "question": "Stok rezervasyonu akisi hangi tablolara ve kolonlara dokunuyor?",
+      "selector": { "node": "POST /api/inventory/reservations", "direction": "forward" },
+      "category": "ef-forward",
+      "population": { "class": "P1", "count": 25, "representative": true, "howCounted": "Ayni endpoint popülasyonu; 2-tablo basamagi." },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "inventory.stock_items", "access": "RW", "operation": "UPDATE", "columns": ["Reserved", "UpdatedAtUtc"] },
+          { "name": "inventory.reservations", "access": "W", "operation": "INSERT", "columns": ["CreatedAtUtc", "ExpiresAtUtc", "Id", "ProductId", "Quantity", "Status", "StockItemId"] }
+        ]
+      },
+      "expectedToFail": [],
+      "notes": {
+        "derivation": "Ayni zincir. Varsayilan strateji OptimisticConcurrency (InventoryModule.cs:43-44); UPDATE yalniz Reserve'un atadigi iki kolonu yazar.",
+        "evidence": [
+          "ReservationEndpoints.cs:14 (MapPost /reservations)",
+          "ReserveStockHandler.cs (IReservationStrategy.ReserveAsync)",
+          "InventoryModule.cs:43-62 (config switch; varsayilan OptimisticConcurrency)",
+          "StockItem.cs (Reserve: Reserved + UpdatedAtUtc)",
+          "20260705154708_InitialInventorySchema.cs:20-31 (reservations 7 kolon)",
+          "phase-7-notes.md 1 (D vakasi: UPDATE SET yalniz 2 kolon, xmin WHERE'de)"
+        ],
+        "why": "Temiz vaka - kacirma ongormuyorum. Naive stratejisi secilirse ayni akis stock_items'i HAM SQL ile yazar (NaiveReservationStrategy.cs:37); bu config kosullu dal Q17'nin notunda."
+      }
+    },
+    {
+      "id": "Q05",
+      "question": "Login akisi hangi tablolara ve kolonlara dokunuyor?",
+      "selector": { "node": "POST /api/identity/login", "direction": "forward" },
+      "category": "ef-forward",
+      "population": { "class": "P1", "count": 25, "representative": true, "howCounted": "Ayni endpoint popülasyonu; 2-tablo basamagi, bir R bir W." },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "identity.users", "access": "R", "operation": "SELECT", "columns": [] },
+          { "name": "identity.refresh_tokens", "access": "W", "operation": "INSERT", "columns": ["CreatedAtUtc", "ExpiresAtUtc", "Id", "RevokedAtUtc", "TokenHash", "UserId"] }
+        ]
+      },
+      "expectedToFail": [],
+      "notes": {
+        "derivation": "Ayni zincir.",
+        "evidence": [
+          "AuthEndpoints.cs (MapPost /login -> LoginHandler)",
+          "LoginHandler.cs (IUserRepository ile kullanici okuma, IRefreshTokenRepository ile token yazma)",
+          "20260706150705_InitialIdentitySchema.cs:17-30 (users 4 kolon), :33-45 (refresh_tokens 6 kolon)"
+        ],
+        "why": "users yalniz okunuyor -> 0 kolon (kolon kumesi yalniz yazmalardan uretiliyor). refresh_tokens INSERT -> alti kolonun hepsi, RevokedAtUtc NULL olarak dahil."
+      }
+    },
+    {
+      "id": "Q06",
+      "question": "Sepette urun miktari guncelleme akisi hangi tablolara ve kolonlara dokunuyor?",
+      "selector": { "node": "PUT /api/cart/items/{productId:guid}", "direction": "forward" },
+      "category": "ef-forward",
+      "population": { "class": "P1", "count": 25, "representative": true, "howCounted": "Ayni endpoint popülasyonu; 1-tablo basamagi (15 endpoint'in sekli)." },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "cart.carts", "access": "RW", "operation": "INSERT|UPDATE", "columns": ["CustomerId", "Items", "UpdatedAtUtc"] }
+        ]
+      },
+      "expectedToFail": [
+        { "id": "F2", "closedIn": null },
+        { "id": "L17", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "Ayni zincir. Iki dal: kayit yoksa INSERT (3 kolon), varsa UPDATE (Items + UpdatedAtUtc). Birlesik beklenti 3 - akis her iki dali da icerir.",
+        "evidence": [
+          "CartEndpoints.cs:45 (MapPut /items/{productId:guid})",
+          "PostgresCartRepository.cs:44-60 (INSERT dali :49-54, UPDATE dali :58-59)",
+          "CartConfiguration.cs:18 (OwnsMany(...).ToJson() -> tek jsonb kolon: Items)",
+          "CachingCartRepository.cs:34 + RedisCartCache.cs:37-49 (Redis'e ikinci kalici kopya, TTL 7 gun)"
+        ],
+        "why": "cart.carts.Items F1'in regresyonu: jsonb kapsayici kolon. Redis yazmasi ontolojide tiplenmemis (L17) - kanit kaybolmus degil, ama 'bu akis hangi dis depolara yaziyor' sorusuna cevap vermiyor."
+      }
+    },
+    {
+      "id": "Q07",
+      "question": "Urun listeleme akisi hangi tablolara dokunuyor?",
+      "selector": { "node": "GET /api/catalog/products", "direction": "forward" },
+      "category": "ef-forward",
+      "population": { "class": "P1", "count": 25, "representative": true, "howCounted": "Ayni endpoint popülasyonu; saf okuma vakasi (kanarya)." },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "catalog.products", "access": "R", "operation": "SELECT", "columns": [] }
+        ]
+      },
+      "expectedToFail": [],
+      "notes": {
+        "derivation": "Ayni zincir. Yazma yok -> kolon kumesi bos; bu bir PRECISION kanaryasi.",
+        "evidence": [
+          "ProductEndpoints.cs:24 (MapGet /products -> GetProductsHandler)",
+          "CatalogModule.cs:51-55 (IProductQueries -> CachingProductQueries dekoratoru)",
+          "ProductQueries.cs (context.Products uzerinden salt okuma)"
+        ],
+        "why": "Kolon uydurulursa burada gorunur. Faz 3 sonu bu kanaryayi kullandi ve tuttu."
+      }
+    },
+    {
+      "id": "Q08",
+      "question": "Kok endpoint hangi tablolara dokunuyor?",
+      "selector": { "node": "GET /", "direction": "forward" },
+      "category": "ef-forward",
+      "population": { "class": "P1", "count": 25, "representative": true, "howCounted": "Ayni endpoint popülasyonu; 0-tablo basamagi (2 endpoint)." },
+      "expected": {
+        "columnKind": "write",
+        "tables": []
+      },
+      "expectedToFail": [],
+      "notes": {
+        "derivation": "Ayni zincir; veri katmanina hic ulasmiyor.",
+        "evidence": [
+          "Program.cs (MapGet \"/\" - modul disinda, Host'ta tanimli)"
+        ],
+        "why": "Bos kume PRECISION iddiasi: bos olmayan her cevap yanlis pozitif. L7'nin kapsam karari da burada gorunur - /health/live ve /health/ready bilerek graph'ta yok ve BEKLENMIYOR."
+      }
+    },
+    {
+      "id": "Q09",
+      "question": "OrderPaid event'i tuketildikten sonra hangi tablolara ve kolonlara dokunuluyor?",
+      "selector": { "node": "event:ModularCommerce.Ordering.Contracts.IntegrationEvents.OrderPaid", "direction": "forward" },
+      "category": "event-bridge",
+      "population": {
+        "class": "P2",
+        "count": 4,
+        "representative": true,
+        "howCounted": "Registry'lerde eslenen integration event sayisi (OrderPaid, OrderCancelled, ProductCreated, ProductUpdated); 3'u tuketiliyor, 1'i tuketilmiyor. Q09/Q10/Q11 ikisini + negatif vakayi orkler."
+      },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "notification.notification_logs", "access": "W", "operation": "INSERT", "columns": ["Channel", "Id", "IdempotencyKey", "OrderId", "Recipient", "SentAtUtc", "Subject"] },
+          { "name": "notification.processed_messages", "access": "RW", "operation": "SELECT+INSERT", "columns": ["ConsumerType", "IdempotencyKey", "MessageId", "ProcessedOnUtc"] }
+        ],
+        "events": { "consumedBy": ["OrderPaidNotificationConsumer.Consume"] },
+        "externalStores": [],
+        "limitations": ["ambiguous-implementation"]
+      },
+      "expectedToFail": [],
+      "notes": {
+        "derivation": "event -> IConsumer<T> -> processor -> DbSet erisimi -> configuration ToTable -> migration kolon listesi -> operasyon turu kolon kumesini belirler.",
+        "evidence": [
+          "OrderPaidNotificationConsumer.cs:8,10 (IConsumer<OrderPaid>, Consume)",
+          "NotificationProcessor.cs:24 (ProcessedMessages.AnyAsync -> R)",
+          "NotificationProcessor.cs:42-50 (NotificationLogs.Add -> INSERT)",
+          "NotificationProcessor.cs:53-59 (ProcessedMessages.Add -> INSERT)",
+          "NotificationLog.cs:4 (Id = Guid.NewGuid() - ISTEMCI uretimli, INSERT'te var)",
+          "20260709105702_InitialNotification.cs:20-27 (notification_logs 7), :38-43 (processed_messages 4)",
+          "NotificationModule.cs:32-42 (iki INotificationChannel kaydi, her biri FaultInjectingChannel sarmali)",
+          "WebhookNotificationChannel.cs:13-23 (HttpClient YOK - simulasyon, dolayisiyla externalStores bos)"
+        ],
+        "why": "Ne identity ne rowversion kolonu var; her iki INSERT tam liste yazar. Uc kanal tipi (Email/Webhook/FaultInjecting) listelenecek ve UCU DE gercekten kosuyor - dogru cevap, ama L11'in tesaduf mekanizmasiyla; bu yuzden ambiguous-implementation limitation'i BEKLENIYOR."
+      }
+    },
+    {
+      "id": "Q10",
+      "question": "ProductCreated event'i tuketildikten sonra hangi tablolara ve kolonlara dokunuluyor?",
+      "selector": { "node": "event:ModularCommerce.Catalog.Contracts.IntegrationEvents.ProductCreated", "direction": "forward" },
+      "category": "event-bridge",
+      "population": { "class": "P2", "count": 4, "representative": true, "howCounted": "Ayni event popülasyonu; ProductCreated modul geciren (Catalog -> Discovery) ve EF disina cikan tek koprü." },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "discovery.product_embeddings", "access": "RW", "operation": "SELECT+UPSERT", "columns": ["Embedding", "ProductId", "SourceTextHash", "UpdatedAtUtc"] }
+        ],
+        "events": { "consumedBy": ["ProductChangedConsumer.Consume"] },
+        "limitations": ["raw-sql", "second-class-evidence", "ambiguous-implementation"]
+      },
+      "expectedToFail": [
+        { "id": "L5", "closedIn": null },
+        { "id": "L6", "closedIn": null },
+        { "id": "F7", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "event -> IConsumer<T> -> handler -> HAM SQL metni (EF degil) -> migration + Sql(...) kolon listesi.",
+        "evidence": [
+          "ProductChangedConsumer.cs:13,15 (IConsumer<ProductCreated>)",
+          "IndexProductHandler.cs:23 (GetSourceTextHashAsync -> R), :42 (UpsertAsync -> W)",
+          "ProductVectorRepository.cs:17-24 (INSERT ... ON CONFLICT: dort kolon), :38 (SELECT SourceTextHash)",
+          "20260715124136_InitialDiscoverySchema.cs:23-35 (EF'in urettigi 3 kolon), :38-39 (Sql ile Embedding vector(1536))",
+          "ProductEmbeddingConfiguration.cs:21 (builder.Ignore(e => e.Embedding))",
+          "DiscoveryModule.cs:66-74 (IEmbeddingService config ile secilir: Fake | Http)"
+        ],
+        "why": "P7a'nin IKINCI config-secimli arayuzu burada (IEmbeddingService). Beklenen 4 kolon fiziksel gercek; FlowLens'in gorebildigi en fazla 3 ve o da EntityConstruction (ikinci sinif) kaniti uzerinden - F7'nin tanimi."
+      }
+    },
+    {
+      "id": "Q11",
+      "question": "OrderCancelled event'ini kim tuketiyor ve tuketici hangi tablolara dokunuyor?",
+      "selector": { "node": "event:ModularCommerce.Ordering.Contracts.IntegrationEvents.OrderCancelled", "direction": "forward" },
+      "category": "event-bridge",
+      "population": {
+        "class": "P2",
+        "count": 1,
+        "representative": false,
+        "howCounted": "Registry'de eslenen 4 event'in tuketicisi OLMAYAN tek ornegi. Tek ornek oldugu icin bu soru kategoriyi degil YALNIZ bu ornegi olcer."
+      },
+      "expected": {
+        "columnKind": "write",
+        "tables": [],
+        "events": { "consumedBy": [] },
+        "nodes": []
+      },
+      "expectedToFail": [],
+      "notes": {
+        "derivation": "event -> IConsumer<T> aramasi -> hicbir eslesme yok -> zincir orada biter.",
+        "evidence": [
+          "OrderingIntegrationEventRegistry.cs:26-30,37 (OrderCancelled eslendi ve dispatcher'a acik - yani gercekten yayinlaniyor)",
+          "ProductChangedConsumer.cs:13 (IConsumer<ProductCreated>, IConsumer<ProductUpdated>)",
+          "OrderPaidNotificationConsumer.cs:8 (IConsumer<OrderPaid>)",
+          "src/** altinda 'IConsumer<' YALNIZ bu iki sinifta; OrderCancelled hicbirinde yok"
+        ],
+        "why": "PRECISION sorusu: bos olmayan her cevap yanlis pozitif. DIKKAT - kodun kendi yorumu aksini soyluyor: Order.cs:150-151 'W10 tuketicileri (Shipping/Notification) iptali dinler' diyor ama boyle bir consumer YOK. Yorum yanlis; sonradan biri yorumu okuyup expected'i 'duzeltmeye' kalkmasin."
+      }
+    },
+    {
+      "id": "Q12",
+      "question": "Arama akisi hangi tablolari ve kolonlari OKUYOR?",
+      "selector": { "node": "POST /api/discovery/search", "direction": "forward" },
+      "category": "raw-sql",
+      "population": {
+        "class": "P3",
+        "count": 5,
+        "representative": true,
+        "howCounted": "Ham SQL diagnostic'i olan bir dosyaya ulasan akis sayisi: ProductVectorRepository 3, NaiveReservationStrategy 2. Iki dosyanin ikisi de orkleniyor."
+      },
+      "expected": {
+        "columnKind": "read",
+        "tables": [
+          { "name": "discovery.product_embeddings", "access": "R", "operation": "SELECT", "columns": ["Embedding", "ProductId"] }
+        ],
+        "limitations": ["raw-sql"]
+      },
+      "expectedToFail": [
+        { "id": "F6", "closedIn": null },
+        { "id": "L6", "closedIn": null },
+        { "id": "F9", "closedIn": null },
+        { "id": "L18-2", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "endpoint -> handler -> repository -> HAM SQL metninin SELECT listesi. EF hic devrede degil.",
+        "evidence": [
+          "SearchEndpoints.cs:17 (MapPost /search), DiscoveryModule.cs:117 (prefix /api/discovery)",
+          "SearchProductsHandler.cs:29 (EmbedAsync), :35 (repository.SearchAsync)",
+          "ProductVectorRepository.cs:53-58 (SELECT \"ProductId\", 1 - (\"Embedding\" <=> @q) ... ORDER BY \"Embedding\" <=> @q)",
+          "20260715124136_InitialDiscoverySchema.cs:38-39 (Embedding kolonu Sql ile eklenmis)",
+          "phase3-validation.md 4 (ayni akis elle dogrulandi: gercekte 1 tablo, FlowLens 0 tablo / 0 kolon)"
+        ],
+        "why": "columnKind READ: bu sorunun kolonlari OKUNAN kolonlar. ColumnsByTable yalniz Writes kenarlarina bakiyor (AnswerBuilder.cs:152), yani okunan kolon recall'i yapisal olarak %0 - bu satir kolon-yazma satirina KARISTIRILMAZ. Graph 'dokunmuyor' demiyor, 'bakamadim' diyor: raw-sql limitation'i beklenen cikti."
+      }
+    },
+    {
+      "id": "Q13",
+      "question": "Urun guncelleme akisi hangi tablolara ve kolonlara dokunuyor?",
+      "selector": { "node": "PUT /api/catalog/products/{id:guid}", "direction": "forward" },
+      "category": "raw-sql",
+      "population": { "class": "P3", "count": 5, "representative": true, "howCounted": "Ayni ham SQL popülasyonu; ayrica P12'nin (dogru cevap, ikinci sinif kanit) 4 (akis,tablo) ciftinden biri." },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "catalog.products", "access": "RW", "operation": "UPDATE", "columns": ["Description", "IsActive", "Name", "UpdatedAtUtc", "price_amount", "price_currency"] },
+          { "name": "catalog.outbox_messages", "access": "W", "operation": "INSERT", "columns": ["Content", "Error", "Id", "OccurredOnUtc", "ProcessedOnUtc", "RetryCount", "Type"] },
+          { "name": "discovery.product_embeddings", "access": "RW", "operation": "SELECT+UPSERT", "columns": ["Embedding", "ProductId", "SourceTextHash", "UpdatedAtUtc"] }
+        ],
+        "events": { "consumedBy": ["ProductChangedConsumer.Consume"] },
+        "externalStores": ["RedisProductCache"],
+        "limitations": ["raw-sql", "second-class-evidence", "interceptor-columns", "ambiguous-implementation"]
+      },
+      "expectedToFail": [
+        { "id": "F5", "closedIn": null },
+        { "id": "L16-4", "closedIn": null },
+        { "id": "L5", "closedIn": null },
+        { "id": "L6", "closedIn": null },
+        { "id": "F7", "closedIn": null },
+        { "id": "F2", "closedIn": null },
+        { "id": "L17", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "Ayni ileri zincir; product_embeddings dalinda ham SQL metnine geciliyor.",
+        "evidence": [
+          "ProductEndpoints.cs:54 (MapPut /products/{id:guid})",
+          "UpdateProductHandler.cs:21 (GetByIdAsync -> R), :33 (product.Update), :40 (UpdateAsync)",
+          "Product.cs:83-87 (bes atama: Name, Description, Price, IsActive, UpdatedAtUtc)",
+          "ProductConfiguration.cs:29-38 (Money -> price_amount + price_currency; yani Price atamasi IKI kolon)",
+          "ProductRepository.cs:26 (SaveChanges -> interceptor), :30-31 (cache.RemoveAsync x2 -> Redis)",
+          "20260715122542_AddCatalogOutbox.cs:17-27 (catalog.outbox_messages 7 kolon)",
+          "CatalogIntegrationEventRegistry.cs:25-29 (ProductUpdated eslemesi) -> ProductChangedConsumer.cs:21",
+          "ProductVectorRepository.cs:17-24 (UPSERT dort kolon)"
+        ],
+        "why": "UPDATE yalniz atananlari yazar -> 6 kolon (Sku ve StockQuantity BEKLENMIYOR: Product.cs:73-74 SKU'nun kimlik oldugunu, stogun Inventory'nin isi oldugunu soyluyor). Uc farkli mekanizma tek soruda: dogrudan atama, interceptor, ham SQL."
+      }
+    },
+    {
+      "id": "Q14",
+      "question": "Dev stok reset akisi hangi tablolara ve kolonlara dokunuyor?",
+      "selector": { "node": "PUT /api/inventory/dev/stock/{productId:guid}", "direction": "forward" },
+      "category": "row-level-regression",
+      "population": {
+        "class": "P10",
+        "count": 14,
+        "representative": true,
+        "howCounted": "Graph'taki Id/golge kolon node sayisi (14) ve RowInsert kenari (109). Bu akis satir duzeyi kuralin iki kanaryasini (Id VAR, xmin YOK) tek govdede tasiyor."
+      },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "inventory.stock_items", "access": "W", "operation": "DELETE+INSERT", "columns": ["CreatedAtUtc", "Id", "OnHand", "ProductId", "Reserved", "UpdatedAtUtc"] },
+          { "name": "inventory.reservations", "access": "W", "operation": "DELETE", "columns": [] }
+        ]
+      },
+      "expectedToFail": [],
+      "notes": {
+        "derivation": "Ayni ileri zincir. DELETE hicbir kolon yazmaz; INSERT tum eslenmis kolonlari yazar, xmin haric.",
+        "evidence": [
+          "StockEndpoints.cs:32 (MapPut /dev/stock/{productId:guid})",
+          "SetStockHandler.cs:16 (StockItem.Create), :22 (RemoveByProductIdAsync), :26-27 (Add + SaveChanges)",
+          "StockItemRepository.cs:21-27 (iki ExecuteDeleteAsync: once reservations, sonra stock_items), :13-14 (StockItems.Add)",
+          "20260705154708_InitialInventorySchema.cs:36-48 (stock_items 7 kolon; xmin rowVersion: true)",
+          "Entity.cs:7 (Id = Guid.NewGuid() - istemci uretimli, INSERT'te var)",
+          "phase-7-notes.md 1 (C vakasi: olculen INSERT listesi 6 kolon, RETURNING xmin)"
+        ],
+        "why": "Kacirma ONGORMUYORUM ama ExecuteDeleteAsync'in kenar uretip uretmedigini BILMIYORUM. inventory.reservations duserse bu 2x2'nin sol-alt kutusudur, yani bu fazin asil bulgusu. Bilmedigim seyi ongormemek kuralin geregi."
+      }
+    },
+    {
+      "id": "Q15",
+      "question": "Outbox dispatcher hangi tabloya, hangi kolonlari yaziyor ve hangi event'leri yayinliyor?",
+      "selector": { "node": "ModularCommerce.Ordering.Infrastructure.Outbox.OutboxDispatcher.ExecuteAsync(System.Threading.CancellationToken)", "direction": "forward" },
+      "category": "outbox",
+      "population": {
+        "class": "P5",
+        "count": 2,
+        "representative": true,
+        "howCounted": "Outbox tablosu sayisi (ordering + catalog); ikisi de ayni sekil. Ayrica L22'nin popülasyonu da 2: iki dispatcher, ikisi de tip-silinmis Publish."
+      },
+      "expected": {
+        "columnKind": "write",
+        "tables": [
+          { "name": "ordering.outbox_messages", "access": "RW", "operation": "SELECT+UPDATE", "columns": ["Error", "ProcessedOnUtc", "RetryCount"] }
+        ],
+        "events": { "publishedBy": ["OrderCancelled", "OrderPaid"] }
+      },
+      "expectedToFail": [
+        { "id": "L22", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "BackgroundService koku -> batch cekirdegi -> DbSet erisimi + property atamalari -> UPDATE yalniz atananlari yazar.",
+        "evidence": [
+          "OutboxDispatcher.cs:27 (ExecuteAsync - BackgroundService koku), :53,:67 (batch cekirdegi)",
+          "OutboxDispatcher.cs:73-77 (OutboxMessages.Where(...).ToListAsync -> R)",
+          "OutboxDispatcher.cs:89,101,107 (message.Error), :90,:108 (RetryCount++), :102 (ProcessedOnUtc)",
+          "OutboxDispatcher.cs:100 (publisher.Publish(integrationEvent, clrType, ct) - FIZIKSEL yayin noktasi)",
+          "OutboxDispatcher.cs:116 (SaveChangesAsync)",
+          "OrderingIntegrationEventRegistry.cs:36-37 (dispatcher'in cozebildigi iki tip: OrderPaid, OrderCancelled)"
+        ],
+        "why": "KONTROL VAKASI: L16-4'un graph'ta duran uc outbox kolonu tam olarak buradan geliyor, interceptor'dan degil. Tablo/kolon tarafi TAM GECMELI; gecmezse outbox hakkindaki anlayisim yanlis. Event tarafi L22: koprü bilerek raise site'a atfedildi, dolayisiyla dispatcher'in forward'inda event cikmayacak."
+      }
+    },
+    {
+      "id": "Q16",
+      "question": "discovery.product_embeddings tablosuna hangi giris noktalarindan ulasiliyor?",
+      "selector": { "node": "table:discovery.product_embeddings", "direction": "backward" },
+      "category": "backward-roots",
+      "population": {
+        "class": "P8",
+        "count": 16,
+        "representative": true,
+        "howCounted": "Toplam tablo sayisi 16; 9'u birden fazla RootKind tasiyor. product_embeddings UC kok tipini birden tasiyan TEK tablo."
+      },
+      "expected": {
+        "roots": {
+          "endpoint": [
+            "POST /api/catalog/products",
+            "POST /api/discovery/search",
+            "PUT /api/catalog/products/{id:guid}"
+          ],
+          "consumer": [
+            "ProductChangedConsumer.Consume",
+            "ProductChangedConsumer.Consume"
+          ],
+          "backgroundJob": [
+            "MigrateAndSeedHostedService.StartAsync"
+          ]
+        },
+        "limitations": ["raw-sql"]
+      },
+      "expectedToFail": [
+        { "id": "F6", "closedIn": null },
+        { "id": "L6", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "tablo -> ona erisen ham SQL / EF konfigurasyonu -> repository -> handler -> onu baglayan endpoint / IConsumer<T> / BackgroundService. Event siniri IConsumer<T> -> registry -> raise site zinciriyle gecildi.",
+        "evidence": [
+          "ProductVectorRepository.cs:17-24,38,53-58 (tabloya erisen tek sinif, tamami ham SQL)",
+          "SearchEndpoints.cs:17 -> SearchProductsHandler.cs:35 (endpoint 1: okuma)",
+          "ProductChangedConsumer.cs:15,21 (iki Consume asiri yuklemesi - iki AYRI consumer node'u; NodeId.cs:13-18 bunun neden zorunlu oldugunu soyluyor)",
+          "ProductEndpoints.cs:43,54 (endpoint 2 ve 3: ProductCreated / ProductUpdated uretenler)",
+          "CatalogDataSeeder.cs:56-61 (event'ler ARTIK TEMIZLENMIYOR -> seed de outbox'a yazar -> Discovery'ye akar)",
+          "known-limitations.md L8 (Faz 4 olcumu: bu tablonun backward'i 4 -> 5 kok)"
+        ],
+        "why": "Beklenen 6 kok. Ongorulen 5 - POST /api/discovery/search duser (ham SQL, graph'ta kenar yok). Bu ongoru L8'in bagimsiz olcumuyle (5) birebir tutuyor."
+      }
+    },
+    {
+      "id": "Q17",
+      "question": "inventory.stock_items tablosuna hangi giris noktalarindan ulasiliyor?",
+      "selector": { "node": "table:inventory.stock_items", "direction": "backward" },
+      "category": "backward-roots",
+      "population": { "class": "P8", "count": 16, "representative": true, "howCounted": "Ayni tablo popülasyonu; stock_items karisik kok ornegi (5 endpoint + 2 arka plan isi)." },
+      "expected": {
+        "roots": {
+          "endpoint": [
+            "GET /api/inventory/stock/{productId:guid}",
+            "POST /api/inventory/reservations",
+            "POST /api/ordering/checkout",
+            "POST /api/ordering/orders/{id:guid}/cancel",
+            "PUT /api/inventory/dev/stock/{productId:guid}"
+          ],
+          "consumer": [],
+          "backgroundJob": [
+            "MigrateAndSeedHostedService.StartAsync",
+            "ReservationTtlSweeper.ExecuteAsync"
+          ]
+        },
+        "externalStores": ["RedisDistributedLock"],
+        "limitations": ["ambiguous-implementation"]
+      },
+      "expectedToFail": [
+        { "id": "F2", "closedIn": null },
+        { "id": "L17", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "Ayni geri zincir.",
+        "evidence": [
+          "InventoryQueries.cs:13-17 (GetStockAsync) <- StockEndpoints.cs:17",
+          "ReservationEndpoints.cs:14 -> ReserveStockHandler -> IReservationStrategy",
+          "StockEndpoints.cs:32 -> SetStockHandler.cs:22,26 -> StockItemRepository.cs:21-27,13-14",
+          "StockReservationService.cs:22,43,50,57 (Reserve/Commit/Expire/Return) <- CheckoutHandler ve CancelOrderHandler.cs:48",
+          "ReservationTtlSweeper.cs:90,105 (CommitAsync / ExpireAsync)",
+          "InventoryDataSeeder.cs:42 (StockItems.Add) <- MigrateAndSeedHostedService",
+          "InventoryModule.cs:43-62 (config switch: Naive | OptimisticConcurrency | RedisLock; RedisLock dali IDistributedLock'u da kaydediyor)",
+          "RedisDistributedLock.cs:31 (StringSetAsync - Redis yazmasi)",
+          "known-limitations.md L8 (Faz 4 olcumu: 6 -> 7 kok)"
+        ],
+        "why": "GET /api/inventory/reservations/{id:guid} BILEREK yok: reservations okuyor, stock_items degil (InventoryQueries.cs:22-27). Uc strateji de listelenecek ama gercekte yalniz biri kosar (varsayilan OptimisticConcurrency) - kayitli asiri-yaklasim politikasi, precision bedeli olculdu. Naive secilirse ayni tablo HAM SQL ile yazilir (NaiveReservationStrategy.cs:37) - P12'nin config kosullu ciftlerinden ikisi bu tabloya bakiyor."
+      }
+    },
+    {
+      "id": "Q18",
+      "question": "cart.carts tablosuna hangi giris noktalarindan ulasiliyor?",
+      "selector": { "node": "table:cart.carts", "direction": "backward" },
+      "category": "backward-roots",
+      "population": { "class": "P8", "count": 16, "representative": true, "howCounted": "Ayni tablo popülasyonu; cart.carts SAF endpoint ornegi (arka plan isi ve consumer yok)." },
+      "expected": {
+        "roots": {
+          "endpoint": [
+            "DELETE /api/cart/items/{productId:guid}",
+            "GET /api/cart",
+            "POST /api/cart/items",
+            "POST /api/ordering/checkout",
+            "PUT /api/cart/items/{productId:guid}"
+          ],
+          "consumer": [],
+          "backgroundJob": []
+        },
+        "externalStores": ["RedisCartCache"],
+        "limitations": ["ambiguous-implementation"]
+      },
+      "expectedToFail": [
+        { "id": "F2", "closedIn": null },
+        { "id": "L17", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "Ayni geri zincir.",
+        "evidence": [
+          "CartConfiguration.cs:18 (ToJson owned koleksiyon) + PostgresCartRepository.cs:14,44,75 (tabloya erisen tek sinif)",
+          "CartEndpoints.cs:25,34,45,57 (dort sepet endpoint'i)",
+          "CartService.cs:13,27 (GetItemsAsync / ClearAsync) <- CheckoutHandler (besinci kok, Ordering'den)",
+          "CartModule.cs:29-32 (ICartRepository -> CachingCartRepository factory; PostgresCartRepository ONUN ICINDE)",
+          "RedisCartCache.cs:43 (StringSetAsync - TTL'li ikinci kalici kopya)"
+        ],
+        "why": "Dekorator deseni: hem CachingCartRepository hem PostgresCartRepository listelenecek ve IKISI DE gercek - 'tumu' dogru cevap, tip kumesi dogru, sarmalama iliskisi yanlis (L11). Kok kumesi TAM GECMELI; yalniz externalStores duser."
+      }
+    },
+    {
+      "id": "Q19",
+      "question": "notification.processed_messages tablosuna hangi giris noktalarindan ulasiliyor?",
+      "selector": { "node": "table:notification.processed_messages", "direction": "backward" },
+      "category": "backward-roots",
+      "population": {
+        "class": "P8",
+        "count": 1,
+        "representative": false,
+        "howCounted": "Kok kumesi YALNIZ Consumer olan tek tablo. notification_logs benzer gorunuyor ama bir dev endpoint'i de var (NotificationDevEndpoints.cs:18), yani karisik. Tek ornek oldugu icin bu soru kategoriyi degil yalniz bu ornegi olcer."
+      },
+      "expected": {
+        "roots": {
+          "endpoint": [],
+          "consumer": ["OrderPaidNotificationConsumer.Consume"],
+          "backgroundJob": []
+        }
+      },
+      "expectedToFail": [],
+      "notes": {
+        "derivation": "Ayni geri zincir.",
+        "evidence": [
+          "NotificationProcessor.cs:24,53 (ProcessedMessages'a dokunan tek yer)",
+          "NotificationModule.cs:44 (INotificationProcessor -> NotificationProcessor, tek kayit)",
+          "OrderPaidNotificationConsumer.cs:24 (processor.ProcessAsync - tek cagiran)",
+          "NotificationDevEndpoints.cs:23 (dev endpoint YALNIZ NotificationLogs okuyor, processed_messages'a dokunmuyor)"
+        ],
+        "why": "Bos endpoint ve bos backgroundJob listesi PRECISION iddiasi: bu tabloya endpoint'ten ulasildigini soyleyen bir cevap yanlis olur."
+      }
+    },
+    {
+      "id": "Q20",
+      "question": "ordering.order_lines tablosuna hangi giris noktalarindan ulasiliyor - okuyanlar dahil?",
+      "selector": { "node": "table:ordering.order_lines", "direction": "backward" },
+      "category": "owned-navigation-read",
+      "population": {
+        "class": "P6",
+        "count": 3,
+        "representative": true,
+        "howCounted": "READS kenari 0 olan owned tablo sayisi: ordering.order_lines, ordering.order_status_history, payment.payment_attempts. Ucu de AYNI SEKIL, dolayisiyla bir soru + olculmus popülasyon yeterli - 'ayni seklin dort ornegi bir dogrulama degil, bir tekrardir'."
+      },
+      "expected": {
+        "roots": {
+          "endpoint": [
+            "GET /api/ordering/orders",
+            "GET /api/ordering/orders/{id:guid}",
+            "POST /api/ordering/checkout",
+            "POST /api/ordering/orders/{id:guid}/cancel"
+          ],
+          "consumer": [],
+          "backgroundJob": ["ReservationTtlSweeper.ExecuteAsync"]
+        }
+      },
+      "expectedToFail": [
+        { "id": "F4", "closedIn": null },
+        { "id": "L19", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "Ayni geri zincir. Okuma tarafi icin owned navigasyonun auto-include'u izlendi: order.Lines'a dokunan her kok, SQL'de bu tabloyu okur.",
+        "evidence": [
+          "OrderConfiguration.cs:29 (OwnsMany(o => o.Lines) - owned koleksiyon, EF auto-include eder)",
+          "Order.cs:107 (yazma: OrderLine insasi) <- CheckoutHandler",
+          "CancelOrderHandler.cs:46 (foreach (var line in order.Lines) - okuma)",
+          "OrderResponse.cs:21 (order.Lines.Select - okuma) <- GetOrderHandler.cs:21",
+          "OrderQueries.cs:29 (o.Lines.Count - okuma) <- GetMyOrdersHandler",
+          "OrderReservationReconciler.cs:23 (SelectMany(o => o.Lines) - okuma) <- ReservationTtlSweeper.cs:80"
+        ],
+        "why": "Beklenen 5 kok, ongorulen 1 (yalniz checkout, yazma yolu). Kayip tek tablo degil bir KENAR TIPI: owned navigasyon okumasinin sozdiziminde DbSet yok, cunku oyle bir DbSet de yok."
+      }
+    },
+    {
+      "id": "Q21",
+      "question": "catalog.outbox_messages tablosuna hangi giris noktalarindan ulasiliyor?",
+      "selector": { "node": "table:catalog.outbox_messages", "direction": "backward" },
+      "category": "outbox",
+      "population": { "class": "P5", "count": 2, "representative": true, "howCounted": "Outbox tablosu sayisi (ordering + catalog); ikisi de ayni sekil, ikisi de orkleniyor (Q15 ordering ileri, Q21 catalog geri)." },
+      "expected": {
+        "roots": {
+          "endpoint": [
+            "POST /api/catalog/products",
+            "PUT /api/catalog/products/{id:guid}"
+          ],
+          "consumer": [],
+          "backgroundJob": [
+            "CatalogOutboxDispatcher.ExecuteAsync",
+            "MigrateAndSeedHostedService.StartAsync"
+          ]
+        }
+      },
+      "expectedToFail": [],
+      "notes": {
+        "derivation": "Ayni geri zincir; interceptor bagi CatalogModule'un AddInterceptors kaydindan degil, entity'yi eslyen tek context'ten kuruldu (L15).",
+        "evidence": [
+          "CatalogModule.cs:36-40 (DomainEventToOutboxInterceptor + CatalogOutboxDispatcher hosted service)",
+          "ProductRepository.cs:21 (AddAsync -> SaveChanges -> interceptor) <- ProductEndpoints.cs:43",
+          "ProductRepository.cs:26 (UpdateAsync -> SaveChanges -> interceptor) <- ProductEndpoints.cs:54",
+          "CatalogOutboxDispatcher.cs:72-76 (okuma), :100-101,:88-89,:107 (yazma), :113 (SaveChanges)",
+          "CatalogDataSeeder.cs:61 (Products.AddRange + SaveChanges; event'ler temizlenmiyor) <- MigrateAndSeedHostedService",
+          "known-limitations.md L8 (Faz 4 olcumu: 3 -> 4 kok)"
+        ],
+        "why": "Kacirma ongormuyorum. MigrateAndSeedHostedService kokunun burada olmasi L8'in duzelttigi hatanin ta kendisi: Shared'da bildirilmis bir BackgroundService kokuydu ve utility sanildigi icin dusuyordu."
+      }
+    },
+    {
+      "id": "Q22",
+      "question": "ordering.orders.Status kolonuna hangi giris noktalari dokunuyor - okuyanlar dahil?",
+      "selector": { "node": "column:ordering.orders.Status", "direction": "backward" },
+      "category": "column-backward",
+      "population": {
+        "class": "P9",
+        "count": 97,
+        "representative": true,
+        "howCounted": "Graph'taki kolon node sayisi 97; hicbiri READS kenari almiyor (Column node'u yalniz bir YAZMA onu adlandirdiginda uretiliyor). Sinifin tamami ayni sekil."
+      },
+      "expected": {
+        "roots": {
+          "endpoint": [
+            "GET /api/ordering/orders",
+            "GET /api/ordering/orders/{id:guid}",
+            "POST /api/ordering/checkout",
+            "POST /api/ordering/orders/{id:guid}/cancel"
+          ],
+          "consumer": [],
+          "backgroundJob": ["ReservationTtlSweeper.ExecuteAsync"]
+        }
+      },
+      "expectedToFail": [
+        { "id": "F9", "closedIn": null },
+        { "id": "L18-2", "closedIn": null }
+      ],
+      "notes": {
+        "derivation": "kolon -> onu adlandiran atama ya da okuma ifadesi -> iceren metot -> cagiran handler -> koku.",
+        "evidence": [
+          "Order.cs:160 (AllowedTransitions[Status] - okuma), :165 (var previous = Status - okuma), :166 (Status = next - yazma)",
+          "Order.cs:125-126,128,142 (MarkStockReserved/MarkPaymentPending/MarkPaid/Cancel hepsi TransitionTo'ya girer) <- CheckoutHandler ve CancelOrderHandler.cs:38",
+          "OrderResponse.cs:17 (order.Status.ToString()) <- GetOrderHandler.cs:21",
+          "OrderQueries.cs:26 (o.Status.ToString()) <- GetMyOrdersHandler",
+          "OrderReservationReconciler.cs:22 (Where(o => o.Status == OrderStatus.Paid) - SQL WHERE'e ceviriliyor) <- ReservationTtlSweeper.cs:80"
+        ],
+        "why": "Soru BILEREK 'kim okuyor' degil 'kim dokunuyor - okuyanlar dahil'. Geri yuruyus kolona GIREN kenarlari gezer, yani 'kim yaziyor'u cevaplar; soruyu 'okuyor' diye sorsaydim gelen 2 yazici yanlis pozitif sayilirdi, halbuki onlar gercek. Bu haliyle kayip saf RECALL olur: beklenen 5, ongorulen 2."
+      }
+    }
+  ]
+}

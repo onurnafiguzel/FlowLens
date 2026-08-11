@@ -230,7 +230,7 @@ graph loaded from C:\...\FlowLens\graph.json: 415 nodes, 966 edges, ~3258 KB hea
 ## 4. Tool'un hedef repoda bulduğu şeyler
 
 Bunlar FlowLens'in hataları değil — **ModularCommerce hakkında** aracın ürettiği gözlemler.
-Dördüncüsü Faz 4'ün utility ölçümünden çıktı.
+Dördüncüsü Faz 4'ün utility ölçümünden, beşincisi Faz 7'nin eval oracle'ından çıktı.
 
 | # | Bulgu | Nerede bulundu |
 |---|---|---|
@@ -238,6 +238,28 @@ Dördüncüsü Faz 4'ün utility ölçümünden çıktı.
 | 2 | **Bayat build** — hedef, en yeni kaynak dosyasından önce derlenmiş | Faz 3 (`EfPreflight`, bloke etmeyen uyarı) |
 | 3 | **`OrderCancelled` yayınlanıyor ama tüketicisi yok** | Faz 3 (diagnostics) |
 | 4 | **Shared'daki bir background service `catalog.products`'a doğrudan yazıyor** | Faz 4 (utility ölçümü) |
+| 5 | **Kod kendini yanlış anlatıyor** — yorum var olmayan bir tüketiciyi tarif ediyor | Faz 7 (eval oracle'ı, Q11) |
+
+### 5. hakkında
+
+`Order.cs:150-151`:
+
+> *"Niyetli dışa-duyuru olayı (OrderPaid kalıbı, OCP): **W10 tüketicileri (Shipping/Notification)
+> iptali dinler.**"*
+
+Böyle bir tüketici **yok**. `src/` altında `IConsumer<` yalnız iki sınıfta geçiyor —
+`ProductChangedConsumer.cs:13` (`ProductCreated`, `ProductUpdated`) ve
+`OrderPaidNotificationConsumer.cs:8` (`OrderPaid`). `OrderCancelled` hiçbirinde yok.
+
+3. bulgu ile aynı olguya iki ayrı yerden bakıyor ve ikisi birlikte daha keskin: Faz 3
+**diagnostics'ten** *"yayınlanıyor, tüketicisi yok"* dedi; Faz 7 oracle'ı **yorumdan** *"tüketicisi
+var yazıyor"* buldu. Yani eksiklik yalnız kodda değil, kodun **kendisi hakkında söylediğinde**.
+
+Bunun eval'deki karşılığı Q11: beklenen cevap boş ve bu bir **precision** sorusu. `notes.why`'a
+yorumun yanlış olduğu açıkça yazıldı — yoksa sonradan biri yorumu okuyup beklenen değeri
+"düzeltmeye" kalkardı. Oracle'ın kaynağı yorum değil, **`IConsumer<T>` bildirimleri**.
+
+> Genel ders: yorum bir kanıt değil. `notes.evidence` zinciri bildirime bakar, açıklamaya değil.
 
 ### 4. hakkında
 
