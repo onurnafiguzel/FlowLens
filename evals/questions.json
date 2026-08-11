@@ -427,7 +427,9 @@
         { "id": "L6", "closedIn": null },
         { "id": "F7", "closedIn": null },
         { "id": "F2", "closedIn": null },
-        { "id": "L17", "closedIn": null }
+        { "id": "L17", "closedIn": null },
+        { "id": "L3", "closedIn": null },
+        { "id": "L11", "closedIn": null }
       ],
       "notes": {
         "derivation": "Ayni ileri zincir; product_embeddings dalinda ham SQL metnine geciliyor.",
