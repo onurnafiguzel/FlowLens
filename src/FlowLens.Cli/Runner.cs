@@ -64,6 +64,7 @@ public static class Runner
             CliCommand.Build => "FlowLens - Phase 3 (graph build)",
             CliCommand.Docs => "FlowLens - Phase 5 (documentation)",
             CliCommand.Triage => "FlowLens - Phase 6 (triage)",
+            CliCommand.Eval => "FlowLens - Phase 7 (eval set)",
             _ => "FlowLens - Phase 1 (Roslyn warm-up)",
         });
 
@@ -105,6 +106,13 @@ public static class Runner
         if (options.Command == CliCommand.Triage)
         {
             return TriageCommand.Run(options);
+        }
+
+        // And for eval: the questions are scored against the same AnswerBuilder every other consumer
+        // calls. Measuring a surface no user has would measure the wrong thing.
+        if (options.Command == CliCommand.Eval)
+        {
+            return EvalCommand.Run(options);
         }
 
         using var loadResult = await LoadAsync(options.SolutionPath);

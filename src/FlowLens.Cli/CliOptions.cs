@@ -21,6 +21,9 @@ public enum CliCommand
 
     /// <summary>Phase 6: turn a stack trace into an incident report. Reads git; never writes.</summary>
     Triage,
+
+    /// <summary>Phase 7: score the eval questions against the graph. Measures the answer, not the code.</summary>
+    Eval,
 }
 
 /// <param name="SolutionPath">Empty when tracing over a graph file, which needs no solution.</param>
@@ -44,7 +47,9 @@ public sealed record CliOptions(
     string? RepoPath = null,
     string? MethodSelector = null,
     string? ExceptionType = null,
-    bool JsonOutput = false)
+    bool JsonOutput = false,
+    string? QuestionsPath = null,
+    string? VerdictsPath = null)
 {
     public const string DefaultGraphPath = "graph.json";
 
@@ -65,6 +70,7 @@ public sealed record CliOptions(
             flowlens trace "<node>" --direction backward    What reaches this?     -> entry points
             flowlens docs -o <dir>                          Mermaid + markdown, from graph.json
             flowlens triage --stack-trace <file>            Incident report from a stack trace
+            flowlens eval -o evals/report.md                Score the eval questions
 
               e.g.  flowlens build C:\src\ModularCommerce\ModularCommerce.sln
                     flowlens trace "POST /api/ordering/checkout"
@@ -112,6 +118,17 @@ public sealed record CliOptions(
                   4 = no frame matched a node.
           Only "git rev-parse" and "git log" are ever issued. No git write operation exists
           in this tool.
+
+        Eval options:
+          --questions <path>    Question set (default evals/questions.json).
+          --verdicts <path>     Oracle cross-check verdicts (default evals/oracle-verdicts.json).
+                                Missing file = no cross-check recorded yet, which is not an error.
+          --graph <path>        Graph to read (default: searched, see /graph/stats).
+          --json                Emit the scorecard as JSON instead of markdown.
+          -o, --output <file>   Write the report to a file instead of stdout.
+
+          The runner NEVER writes to the question set. A wrong expected value is corrected in a
+          separate commit that cites the source line which disproved it.
 
         Trace options:
           --endpoint "<METHOD /route>"  Endpoint to start from, e.g. "POST /api/ordering/checkout".
@@ -172,6 +189,10 @@ public sealed record CliOptions(
                 command = CliCommand.Triage;
                 index = 1;
                 break;
+            case "eval":
+                command = CliCommand.Eval;
+                index = 1;
+                break;
         }
 
         var positional = new List<string>();
@@ -189,6 +210,8 @@ public sealed record CliOptions(
         string? repoPath = null;
         string? methodSelector = null;
         string? exceptionType = null;
+        string? questionsPath = null;
+        string? verdictsPath = null;
         var jsonOutput = false;
         var direction = TraversalDirection.Forward;
         var includeUtility = true;
@@ -226,6 +249,8 @@ public sealed record CliOptions(
                 case "--repo":
                 case "--method":
                 case "--exception":
+                case "--questions":
+                case "--verdicts":
                 case "-o":
                 case "--output":
                 {
@@ -248,6 +273,8 @@ public sealed record CliOptions(
                         case "--repo": repoPath = value; break;
                         case "--method": methodSelector = value; break;
                         case "--exception": exceptionType = value; break;
+                        case "--questions": questionsPath = value; break;
+                        case "--verdicts": verdictsPath = value; break;
                         case "-o":
                         case "--output": outputPath = value; break;
                         case "--direction":
@@ -338,19 +365,23 @@ public sealed record CliOptions(
             }
         }
 
-        // Docs and triage both read a built graph and never load a solution, so a solution path is
-        // neither required nor accepted for either.
-        if (command is CliCommand.Docs or CliCommand.Triage)
+        // Docs, triage and eval all read a built graph and never load a solution, so a solution path
+        // is neither required nor accepted for any of them.
+        if (command is CliCommand.Docs or CliCommand.Triage or CliCommand.Eval)
         {
             solutionPath = null;
 
             if (argument is not null)
             {
-                error = command == CliCommand.Docs
-                    ? "docs takes no positional argument. Use -o <dir> and optionally " +
-                      "--endpoint / --module."
-                    : "triage takes no positional argument. Use --stack-trace <file> or " +
-                      "--method \"<Type.Method>\".";
+                error = command switch
+                {
+                    CliCommand.Docs => "docs takes no positional argument. Use -o <dir> and optionally " +
+                        "--endpoint / --module.",
+                    CliCommand.Eval => "eval takes no positional argument. Use --questions <path> " +
+                        "and -o <file>.",
+                    _ => "triage takes no positional argument. Use --stack-trace <file> or " +
+                        "--method \"<Type.Method>\".",
+                };
                 return null;
             }
 
@@ -382,12 +413,14 @@ public sealed record CliOptions(
             command == CliCommand.Build ? outputPath ?? DefaultGraphPath : graphPath,
             direction,
             includeUtility,
-            command is CliCommand.Docs or CliCommand.Triage ? outputPath : null,
+            command is CliCommand.Docs or CliCommand.Triage or CliCommand.Eval ? outputPath : null,
             moduleFilter,
             stackTracePath,
             repoPath,
             methodSelector,
             exceptionType,
-            jsonOutput);
+            jsonOutput,
+            questionsPath,
+            verdictsPath);
     }
 }
