@@ -103,3 +103,117 @@ Sorulması gereken soru: **"bu akış onu yazıyor mu?"** → üçünü de yazm�
 | 5 §11.6 | mutasyon testi kırmadı | test **yanlış satırı** koruyordu |
 | 6 §7a | mutasyon testi kırmadı | test doğruydu, **popülasyon** sessizdi |
 | **7 §1** | precision **%100** | metrik doğruydu, **soru** yanlıştı |
+
+---
+
+## 2. Eval set kendi iç tutarlılığını sınadı ve tutarsız çıktı
+
+İlk koşunun sol-alt kutusunda (öngörülmedi + gerçekleşti) tek soru vardı: **Q19**,
+`notification.processed_messages`'ın geri sorusu. Beklenen "1 consumer, 0 endpoint" idi; cevapta
+consumer **bulundu**, ama fazladan bir kök geldi: `POST /api/ordering/checkout`.
+
+Fazladan kök gerçekti. Zincir tamamen kaynakta:
+
+```
+Order.cs:136                          Raise(new OrderPaid(...))
+OrderingIntegrationEventRegistry.cs:21-25   domain -> integration eşlemesi
+OrderPaidNotificationConsumer.cs:8,24       IConsumer<OrderPaid> -> processor.ProcessAsync
+NotificationProcessor.cs:53                 ProcessedMessages.Add(...)
+```
+
+**Asıl bulgu bu değil.** Asıl bulgu, aynı köprü hakkında **kendi soru setimin iki farklı şey
+iddia etmesi**: Q01 checkout'un ileri cevabında `notification.processed_messages`'ı bekliyor —
+ve o iddia **doğrulandı**. Aynı köprü ters yönde geçilmezse Q01 ile Q19 aynı anda doğru olamaz.
+
+> Kaçırma tool'da değil **oracle'daydı**, ve onu bulan şey FlowLens'in çıktısı değil, eval set'in
+> **kendi içindeki çelişki** oldu. Faz 1'in *"68 proje / doğrusu 66"* dersinin bu fazdaki
+> karşılığı — o zaman hatayı fark eden bir insan olmuştu, bu kez ölçüm aracının kendisi.
+
+### Çapraz kontrol elle değil makineyle yapıldı
+
+Q19'u fark ettikten sonra sorunun tek olup olmadığı **taranarak** cevaplandı: her
+(ileri soru → tablo T) çifti, T'nin geri sorusunun kök listesine karşı kontrol edildi.
+
+| Tablo | Geri | İleri eşleri | Sonuç |
+|---|---|---|---|
+| `cart.carts` | Q18 | Q01, Q06 | ✓ |
+| `catalog.outbox_messages` | Q21 | Q03, Q13 | ✓ |
+| `discovery.product_embeddings` | Q16 | Q03, Q10, Q12, Q13 | ✓ |
+| `inventory.stock_items` | Q17 | Q01, Q02, Q04, Q14 | ✓ |
+| `ordering.order_lines` | Q20 | Q01, Q02 | ✓ |
+| `notification.processed_messages` | Q19 | Q01, Q09 | **✗** |
+
+Çelişki tekti. **Ama kapsam değil:** 16 tablonun yalnız **6'sının** iki yönü de soruluyor. Kalan
+on tablo (`catalog.products`, `identity.users`, `identity.refresh_tokens`, `inventory.reservations`,
+`notification.notification_logs`, `ordering.orders`, `ordering.order_status_history`,
+`ordering.outbox_messages`, `payment.payments`, `payment.payment_attempts`) çapraz kontrol
+**edilemiyor** — tutarlı oldukları için değil, **sınanmadıkları** için sessizler. Bu, eval set'in
+ölçülmüş bir sınırı olarak kaydedildi.
+
+### Popülasyon iddiası da çürüdü
+
+Q19 *"kök kümesi YALNIZ Consumer olan tek tablo"* diyordu, `count: 1`. Ölçüm: graph genelinde
+yalnız-consumer tablo **sıfır**. Consumer kökü *bulunan* tablo **3** — ve üçünün de kök kümesi
+karışık.
+
+| Tablo | Kök kümesi |
+|---|---|
+| `discovery.product_embeddings` | 2 endpoint + 1 consumer + 1 arka plan işi |
+| `notification.notification_logs` | 2 endpoint + 1 consumer |
+| `notification.processed_messages` | 1 endpoint + 1 consumer |
+
+> Popülasyon sayımı yalnız **tanıma** değil, **beklenen değerin kendisine** de duyarlıymış: yanlış
+> bir `expected`, yanlış bir popülasyon tanımı üretiyor. İkisi aynı hatanın iki yüzü.
+
+---
+
+## 3. Kapıyı düzeltmeden önce yazmak — bir yerine iki örnek
+
+İlk koşuda Q06 sağ-üst kutuya düştü: *"öngörüldü, gerçekleşmedi"*, yani rapor **öngörünün
+yanlış olduğunu** söylüyordu. Değildi. Q06 `F2`/`L17` öngörüyordu ama `externalStores`'u hiç
+**iddia etmiyordu** — cevapta oynayabilecek hiçbir eksen yoktu. Öngörü yanlış değil,
+**ölçülemezdi**.
+
+İkisi farklı sonuç ve 3×2 onları aynı kutuda gösteriyordu. Kapı yazıldı:
+
+```
+EveryPredictedFailureHasAnAxisThatCouldRealiseIt
+  her expectedToFail girdisi icin, o sinirin etkileyebilecegi eksen
+  (tables / roots / events / externalStores / limitations / nodes)
+  expected'da var mi?
+```
+
+**Kapı düzeltmeden ÖNCE yazıldı ve 22 sorunun tamamını taradı.** Sonuç: 2 soru, 4 girdi —
+Q06 **ve Q01**. Q01 aynı kusuru taşıyordu ve kimse bakmıyordu.
+
+> Kapıyı Q06 düzeltildikten sonra yazsaydım, Q06'ya göre şekillenir ve Q01 sessiz kalırdı.
+> Faz 6'nın kuralının ("eksik testi fixture'dan değil graph'tan seç") soru seti üzerindeki
+> karşılığı: **eksik kapıyı bilinen vakadan değil, popülasyonun tamamından türet.**
+
+Düzeltmeden sonra Q06 sağ-üstten sol-üste geçti — ölçülebilir hale gelince öngörü **tuttu**.
+
+### Üç oracle düzeltmesi, üç ayrı commit
+
+| Soru | Ne değişti | Kaynak kanıtı |
+|---|---|---|
+| Q19 | `roots.endpoint` += checkout; popülasyon yeniden ölçüldü | `Order.cs:136` · `OrderPaidNotificationConsumer.cs:8` |
+| Q06 | `externalStores: ["RedisCartCache"]` | `CachingCartRepository.cs:34` |
+| Q01 | `externalStores: ["RedisCartCache"]` | `CartService.cs:13,27` → `RedisCartCache.cs:43` |
+
+Üçü de runner commit'inden **ayrı**, her biri düzeltmeyi çürüten kaynak satırını mesajında
+taşıyor. Böylece *"beklenen değer çıktıya uydurulmuş mu?"* sorusu tek bir `git log` ile
+cevaplanıyor.
+
+### Rapor kusuru da bir bulgu
+
+`tablo (erisim R/W)` satırı popülasyon olarak **uyuşmazlıkları** kullanıyordu: 37 kontrolün 6
+uyuşmazlığı `6 beklenen · 0 bulunan · %0` diye okunuyordu — ölçülenden çok daha kötü bir sayı ve
+uyuşan 31 hakkında hiçbir şey söylemiyor. Popülasyon **bulunan tablolar** olarak düzeltildi:
+`37 · 31 · %83,8`. Sessizce düzeltilmedi, ayrı commit'e kondu.
+
+### Sol-alt kutu artık boş — ve bu bir başarı değil
+
+Düzeltmelerden sonra öngörülmeyen kaçırma **kalmadı**. Yani bu koşuda eval, FlowLens hakkında
+sürpriz bir şey bulmadı; **kendi hakkında üç şey** buldu. Sol-alt kutunun boş olması, soruların
+yalnız öngörülen şeyleri bulduğu anlamına da gelebilir — bir sonraki koşuda şüphelenilecek yer
+burasıdır.
