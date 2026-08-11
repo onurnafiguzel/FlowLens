@@ -37,7 +37,8 @@
           { "name": "payment.payment_attempts", "access": "W", "operation": "INSERT", "columns": ["AttemptNumber", "ErrorCode", "LatencyMs", "OccurredAtUtc", "Outcome", "PspTransactionId", "payment_id"] },
           { "name": "notification.notification_logs", "access": "W", "operation": "INSERT", "columns": ["Channel", "Id", "IdempotencyKey", "OrderId", "Recipient", "SentAtUtc", "Subject"] },
           { "name": "notification.processed_messages", "access": "RW", "operation": "SELECT+INSERT", "columns": ["ConsumerType", "IdempotencyKey", "MessageId", "ProcessedOnUtc"] }
-        ]
+        ],
+        "externalStores": ["RedisCartCache"]
       },
       "expectedToFail": [
         { "id": "L21", "closedIn": null },
