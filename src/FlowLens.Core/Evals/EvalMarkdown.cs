@@ -96,6 +96,12 @@ public static class EvalMarkdown
         text.Append("> `sınır kodu` satırı bir **varlık** iddiasıdır, küme eşitliği değil: sorular "
             + "bulunması ZORUNLU kodları sayar, cevabın taşıyabileceği kodların tamamını değil. "
             + "Bu yüzden precision hesaplanmaz.\n\n");
+        text.Append("> ⚠ **Sınır kodlarının YANLIŞ POZİTİFLERİ ölçülmüyor.** Varlık iddiası olduğu "
+            + "için precision hesaplanmıyor, dolayısıyla hak edilmeden takılan bir uyarı hiçbir "
+            + "sayıya yansımıyor. Böyle bir örnek var ve **elle** bulundu: `inventory.reservations`'ın "
+            + "geri cevabına `raw-sql` uyarısı takılıyor, çünkü `NaiveReservationStrategy.cs` alt "
+            + "grafta — ama o dosyadaki ham SQL `stock_items`'ı yazıyor, `reservations`'ı değil "
+            + "(L24). Ölçülmeyen bir şeyi ölçülmüş göstermemek için bu açık kalıyor.\n\n");
         text.Append("> `tablo (erisim R/W)` satırının popülasyonu **bulunan tablolardır**, "
             + "uyuşmazlıklar değil. `Bulunan` sütunu erişimi doğru raporlanan tablo sayısıdır; "
             + "aradaki fark uyuşmazlık sayısıdır ve her biri §6'da adıyla yazılıdır. Bir tablo "
@@ -127,18 +133,45 @@ public static class EvalMarkdown
     private static void Categories(StringBuilder text, EvalScorecard card)
     {
         text.Append("## 4. Kategori kırılımı — popülasyonla birlikte\n\n");
-        text.Append("| Sınıf | Soru | Popülasyon | Temsilci mi | Beklenen | Bulunan | Kaçırılan |\n");
-        text.Append("|---|---:|---:|---|---:|---:|---:|\n");
+        text.Append("Satırlar sorunun **beyan ettiği** popülasyon sınıfına göre gruplanır.\n\n");
+        text.Append("| Sınıf | Soru | Beyan edilen popülasyon | Temsilcilik | Beklenen | Bulunan | Kaçırılan |\n");
+        text.Append("|---|---:|---|---|---:|---:|---:|\n");
 
         foreach (var row in card.Categories)
         {
-            var representative = row.Representative
-                ? "evet"
-                : $"**HAYIR** — tek örnek, kategori değil o örnek ölçüldü";
+            var counts = string.Join(", ", row.DeclaredCounts);
+
+            // Representativity is a property of a QUESTION, not of a class: one single-example
+            // question does not make its class unrepresentative. An AND over the questions said
+            // exactly that and labelled P2 - a class of four - as "one example".
+            var representative = row.SingleExampleQuestions.Count == 0
+                ? $"{row.Questions}/{row.Questions}"
+                : $"{row.Questions - row.SingleExampleQuestions.Count}/{row.Questions} — "
+                    + $"tek örnek: {string.Join(", ", row.SingleExampleQuestions)}";
 
             text.Append(
-                $"| {row.PopulationClass} | {row.Questions} | {row.PopulationCount} | {representative} | "
+                $"| {row.PopulationClass} | {row.Questions} | {counts} | {representative} | "
                 + $"{row.Expected} | {row.Found} | {row.Missed} |\n");
+        }
+
+        text.Append('\n');
+        text.Append("> Popülasyon sütunu, o sınıfın sorularının beyan ettiği **farklı** değerleri "
+            + "gösterir, en büyüğünü değil. Bir sınıfın soruları kendi popülasyonları hakkında "
+            + "anlaşamıyorsa bu görünür olmalı.\n\n");
+
+        text.Append("### Beyan edilmemiş ama kapsanan sınıflar\n\n");
+        text.Append("Bir soru **bir** popülasyon sınıfı beyan eder, birkaçını birden kapsar. "
+            + "Yalnız beyan edilene göre gruplamak, ölçülen beş sınıfı tablodan tamamen düşürürdü — "
+            + "§8'in engellemeye çalıştığı sessiz atlama, bir bölüm önce.\n\n");
+        text.Append("| Sınıf | Ad | Popülasyon | Taşıyan soru | Neden ayrı satırı yok |\n");
+        text.Append("|---|---|---:|---|---|\n");
+
+        foreach (var covered in card.CoveredClasses)
+        {
+            text.Append(
+                $"| {covered.Id} | {covered.Name} | {covered.Population} | "
+                + $"{(covered.Questions.Count == 0 ? "—" : string.Join(", ", covered.Questions))} | "
+                + $"{covered.Reason} |\n");
         }
 
         text.Append('\n');
@@ -165,6 +198,30 @@ public static class EvalMarkdown
         text.Append('\n');
         text.Append("> Sol-alt kutu (öngörülmedi + gerçekleşti) doluysa eval işini yapmıştır: "
             + "çıktıyı kopyalayarak bir kaçırma öngörüsü üretilemez.\n\n");
+
+        // A reader arriving at an empty bottom-left cell concludes "no surprises". The opposite is
+        // what happened, and the cell cannot say so by itself.
+        if (card.Boxes.First(b => b.Row == EvalScore.NotPredicted && b.Realized).Questions.Count == 0)
+        {
+            text.Append("**Sol-alt kutu boş — ama \"sürpriz çıkmadı\" demek değil.** İlk koşuda "
+                + "DOLUYDU (Q19). Çapraz kontrol onun bir **oracle hatası** olduğunu gösterdi: "
+                + "beklenen değer, aynı köprüyü ileri yönde soran Q01 ile çelişiyordu. Düzeltme "
+                + "uygulanınca soru normal kutuya geçti ve kutu boşaldı.\n\n");
+            text.Append("Bu fazın bulguları tool'un kaçırmalarında değil, **eval set'in kendisinde** "
+                + "çıktı: üç oracle düzeltmesi (Q19, Q06, Q01) ve üç yeni sınır (L21, L23, L24). "
+                + "Boş sol-alt kutu *\"sürpriz yok\"* değil, ***\"sürprizler eval set'in "
+                + "kendisindeydi\"*** diye okunmalı.\n\n");
+        }
+
+        text.Append("**Kutuların birimi soru, kalem değil — ve bu bir sınır.** L23 bunun ölçülmüş "
+            + "örneği. İlk koşuda Q01 **yedi** sınır öngörüyordu ve kaçırma gerçekleştiği için "
+            + "*\"öngörüldü + gerçekleşti\"* kutusunda **teyit** olarak duruyordu. Ama kaybolan "
+            + "`ordering.order_lines.UnitPrice` / `.Currency` o yedinin **hiçbirine** girmiyordu — "
+            + "kalem düzeyinde öngörülmemiş bir kaçırmaydı ve kutu tablosu onu gizledi. Yalnız "
+            + "soru soru okumak açığa çıkardı; sınır sonradan **L23** olarak açıldı ve Q01'in "
+            + "öngörülerine eklendi, o yüzden bu koşuda artık öngörülü görünüyor.\n\n");
+        text.Append("> Doğru okunan bir kutu tablosu bile kalem düzeyindeki bulguları "
+            + "saklayabilir. Tek tek atıf yalnız §6'dan yapılabilir.\n\n");
 
         static string Cell(BoxCell cell) =>
             cell.Questions.Count == 0

@@ -38,6 +38,8 @@ Recall önceliklidir: eksik bir kolon, fazladan bir kolondan tehlikelidir.
 
 > `sınır kodu` satırı bir **varlık** iddiasıdır, küme eşitliği değil: sorular bulunması ZORUNLU kodları sayar, cevabın taşıyabileceği kodların tamamını değil. Bu yüzden precision hesaplanmaz.
 
+> ⚠ **Sınır kodlarının YANLIŞ POZİTİFLERİ ölçülmüyor.** Varlık iddiası olduğu için precision hesaplanmıyor, dolayısıyla hak edilmeden takılan bir uyarı hiçbir sayıya yansımıyor. Böyle bir örnek var ve **elle** bulundu: `inventory.reservations`'ın geri cevabına `raw-sql` uyarısı takılıyor, çünkü `NaiveReservationStrategy.cs` alt grafta — ama o dosyadaki ham SQL `stock_items`'ı yazıyor, `reservations`'ı değil (L24). Ölçülmeyen bir şeyi ölçülmüş göstermemek için bu açık kalıyor.
+
 > `tablo (erisim R/W)` satırının popülasyonu **bulunan tablolardır**, uyuşmazlıklar değil. `Bulunan` sütunu erişimi doğru raporlanan tablo sayısıdır; aradaki fark uyuşmazlık sayısıdır ve her biri §6'da adıyla yazılıdır. Bir tablo bulunamadıysa erişimi hiç kontrol edilmez — aynı kayıp iki kez sayılmaz.
 
 ## 3. Kanıt skoru — üç sonuç
@@ -54,16 +56,32 @@ Doğru cevap ile doğru sebep aynı şey değil. İkiye indirgenirse F7 sınıf�
 
 ## 4. Kategori kırılımı — popülasyonla birlikte
 
-| Sınıf | Soru | Popülasyon | Temsilci mi | Beklenen | Bulunan | Kaçırılan |
-|---|---:|---:|---|---:|---:|---:|
-| P1 | 8 | 25 | evet | 193 | 162 | 31 |
-| P2 | 3 | 4 | **HAYIR** — tek örnek, kategori değil o örnek ölçüldü | 27 | 25 | 2 |
-| P3 | 2 | 5 | evet | 33 | 20 | 13 |
-| P5 | 2 | 2 | evet | 11 | 9 | 2 |
-| P6 | 1 | 3 | evet | 5 | 1 | 4 |
-| P8 | 4 | 16 | evet | 25 | 21 | 4 |
-| P9 | 1 | 97 | evet | 5 | 2 | 3 |
-| P10 | 1 | 14 | evet | 10 | 10 | 0 |
+Satırlar sorunun **beyan ettiği** popülasyon sınıfına göre gruplanır.
+
+| Sınıf | Soru | Beyan edilen popülasyon | Temsilcilik | Beklenen | Bulunan | Kaçırılan |
+|---|---:|---|---|---:|---:|---:|
+| P1 | 8 | 25 | 8/8 | 193 | 162 | 31 |
+| P2 | 3 | 1, 4 | 2/3 — tek örnek: Q11 | 27 | 25 | 2 |
+| P3 | 2 | 5 | 2/2 | 33 | 20 | 13 |
+| P5 | 2 | 2 | 2/2 | 11 | 9 | 2 |
+| P6 | 1 | 3 | 1/1 | 5 | 1 | 4 |
+| P8 | 4 | 3, 16 | 4/4 | 25 | 21 | 4 |
+| P9 | 1 | 97 | 1/1 | 5 | 2 | 3 |
+| P10 | 1 | 14 | 1/1 | 10 | 10 | 0 |
+
+> Popülasyon sütunu, o sınıfın sorularının beyan ettiği **farklı** değerleri gösterir, en büyüğünü değil. Bir sınıfın soruları kendi popülasyonları hakkında anlaşamıyorsa bu görünür olmalı.
+
+### Beyan edilmemiş ama kapsanan sınıflar
+
+Bir soru **bir** popülasyon sınıfı beyan eder, birkaçını birden kapsar. Yalnız beyan edilene göre gruplamak, ölçülen beş sınıfı tablodan tamamen düşürürdü — §8'in engellemeye çalıştığı sessiz atlama, bir bölüm önce.
+
+| Sınıf | Ad | Popülasyon | Taşıyan soru | Neden ayrı satırı yok |
+|---|---|---:|---|---|
+| P4 | Redis / iliskisel olmayan depo | 4 | Q01, Q06, Q13, Q17, Q18 | externalStores ekseninde olculuyor, ama bu sorularin beyan ettigi sinif P1/P8. 4 sinif, 9 dugum. |
+| P7 | Ambiguous interface | 22 | Q09, Q10, Q13, Q17, Q18 | limitations ekseninde (ambiguous-implementation) ve dugum kumesinde olculuyor. 22 dugum, 16 tip, 3 desen; config-secimli iki arayuz Q10 ve Q17'de. |
+| P11 | jsonb kapsayici kolon | 1 | Q06 | cart.carts.Items beklenen kolon listesinde; ayri satiri yok cunku Q06 P1 beyan ediyor. TEK ORNEK - kategori degil o ornek olculuyor. |
+| P12 | Dogru cevap, ikinci sinif kanit (F7) | 4 | Q03, Q10, Q13 | Kanit skorunda olculuyor (bkz. bolum 3), kategori kiriliminda degil. 4 (akis,tablo) cifti. |
+| P13 | static readonly alan (L10) | 4 | — | Hicbir soru tasimiyor ve tasiyamaz: 4 sitenin hicbiri bir tabloyu, kolonu, koku ya da event'i degistirmiyor. Meta-testte gerekceli bos satir. |
 
 ## 5. Öngörü kutuları — 3×2
 
@@ -76,6 +94,14 @@ Birim **soru**, öngörü değil: bir öngörüyü belirli bir kaçırmaya bağl
 | **ongorulmedi** | — (BU FAZIN ASIL BULGUSU) | **9** · Q04, Q05, Q07, Q08, Q09, Q11, Q14, Q19, Q21<br>normal |
 
 > Sol-alt kutu (öngörülmedi + gerçekleşti) doluysa eval işini yapmıştır: çıktıyı kopyalayarak bir kaçırma öngörüsü üretilemez.
+
+**Sol-alt kutu boş — ama "sürpriz çıkmadı" demek değil.** İlk koşuda DOLUYDU (Q19). Çapraz kontrol onun bir **oracle hatası** olduğunu gösterdi: beklenen değer, aynı köprüyü ileri yönde soran Q01 ile çelişiyordu. Düzeltme uygulanınca soru normal kutuya geçti ve kutu boşaldı.
+
+Bu fazın bulguları tool'un kaçırmalarında değil, **eval set'in kendisinde** çıktı: üç oracle düzeltmesi (Q19, Q06, Q01) ve üç yeni sınır (L21, L23, L24). Boş sol-alt kutu *"sürpriz yok"* değil, ***"sürprizler eval set'in kendisindeydi"*** diye okunmalı.
+
+**Kutuların birimi soru, kalem değil — ve bu bir sınır.** L23 bunun ölçülmüş örneği. İlk koşuda Q01 **yedi** sınır öngörüyordu ve kaçırma gerçekleştiği için *"öngörüldü + gerçekleşti"* kutusunda **teyit** olarak duruyordu. Ama kaybolan `ordering.order_lines.UnitPrice` / `.Currency` o yedinin **hiçbirine** girmiyordu — kalem düzeyinde öngörülmemiş bir kaçırmaydı ve kutu tablosu onu gizledi. Yalnız soru soru okumak açığa çıkardı; sınır sonradan **L23** olarak açıldı ve Q01'in öngörülerine eklendi, o yüzden bu koşuda artık öngörülü görünüyor.
+
+> Doğru okunan bir kutu tablosu bile kalem düzeyindeki bulguları saklayabilir. Tek tek atıf yalnız §6'dan yapılabilir.
 
 ## 6. Soru soru
 

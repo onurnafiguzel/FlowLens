@@ -24,15 +24,33 @@ public sealed record EvidenceTally(int ExpectedMechanism, int DifferentButValid,
     public int Total => ExpectedMechanism + DifferentButValid + NotFound;
 }
 
-/// <param name="Representative">False when the class has exactly one example in the graph.</param>
+/// <param name="DeclaredCounts">
+/// Every DISTINCT population size the questions of this class declare, not the largest.
+/// Reporting only the maximum hides a class whose questions disagree about their own population -
+/// P8's four questions declare 16, 16, 16 and 3, and "16" alone would say the class is uniform.
+/// </param>
+/// <param name="SingleExampleQuestions">
+/// Questions whose class has exactly one example. Kept as a LIST of ids rather than folded into a
+/// class-level boolean: one single-example question does not make its whole class unrepresentative,
+/// and an AND over the questions said exactly that.
+/// </param>
 public sealed record CategoryRow(
     string PopulationClass,
     int Questions,
-    int PopulationCount,
-    bool Representative,
+    IReadOnlyList<int> DeclaredCounts,
+    IReadOnlyList<string> SingleExampleQuestions,
     int Expected,
     int Found,
     int Missed);
+
+/// <param name="Questions">Questions that exercise this class WITHOUT declaring it. Empty is possible.</param>
+/// <param name="Reason">Why it has no row of its own in the breakdown.</param>
+public sealed record CoveredClass(
+    string Id,
+    string Name,
+    int Population,
+    IReadOnlyList<string> Questions,
+    string Reason);
 
 /// <param name="Row">Which prediction state the question was in BEFORE the run.</param>
 /// <param name="Realized">Whether a miss actually happened.</param>
@@ -51,6 +69,7 @@ public sealed record EvalScorecard(
     IReadOnlyList<MetricRow> Metrics,
     EvidenceTally Evidence,
     IReadOnlyList<CategoryRow> Categories,
+    IReadOnlyList<CoveredClass> CoveredClasses,
     IReadOnlyList<BoxCell> Boxes,
     IReadOnlyList<MetaRow> Meta,
     IReadOnlyList<UnmeasurableClass> Unmeasurable,
@@ -83,6 +102,7 @@ public static class EvalScore
             Metrics(comparisons),
             Evidence(run),
             Categories(run),
+            Covered(),
             Boxes(run),
             Meta(run),
             Unmeasurable(),
@@ -179,11 +199,38 @@ public static class EvalScore
             .Select(g => new CategoryRow(
                 g.Key,
                 g.Count(),
-                g.Max(r => r.Question.Population.Count),
-                g.All(r => r.Question.Population.Representative),
+                [.. g.Select(r => r.Question.Population.Count).Distinct().Order()],
+                [
+                    .. g.Where(r => !r.Question.Population.Representative)
+                        .Select(r => r.Question.Id)
+                        .Order(StringComparer.Ordinal),
+                ],
                 g.SelectMany(r => r.Comparisons).Sum(c => c.ExpectedCount),
                 g.SelectMany(r => r.Comparisons).Sum(c => c.FoundCount),
                 g.SelectMany(r => r.Comparisons).Sum(c => c.Missing.Count))),
+    ];
+
+    /// <summary>
+    /// Classes that ARE exercised but are not the declared class of any question.
+    /// <para>
+    /// A question declares one population class and covers several: Q18 declares P8 (backward roots)
+    /// and also carries P4 (Redis) and P7 (ambiguity). Grouping the breakdown by the declared class
+    /// alone therefore drops five measured classes off the table entirely - the silent omission
+    /// section 8 exists to prevent, happening one section earlier.
+    /// </para>
+    /// </summary>
+    private static IReadOnlyList<CoveredClass> Covered() =>
+    [
+        new("P4", "Redis / iliskisel olmayan depo", 4, ["Q01", "Q06", "Q13", "Q17", "Q18"],
+            "externalStores ekseninde olculuyor, ama bu sorularin beyan ettigi sinif P1/P8. 4 sinif, 9 dugum."),
+        new("P7", "Ambiguous interface", 22, ["Q09", "Q10", "Q13", "Q17", "Q18"],
+            "limitations ekseninde (ambiguous-implementation) ve dugum kumesinde olculuyor. 22 dugum, 16 tip, 3 desen; config-secimli iki arayuz Q10 ve Q17'de."),
+        new("P11", "jsonb kapsayici kolon", 1, ["Q06"],
+            "cart.carts.Items beklenen kolon listesinde; ayri satiri yok cunku Q06 P1 beyan ediyor. TEK ORNEK - kategori degil o ornek olculuyor."),
+        new("P12", "Dogru cevap, ikinci sinif kanit (F7)", 4, ["Q03", "Q10", "Q13"],
+            "Kanit skorunda olculuyor (bkz. bolum 3), kategori kiriliminda degil. 4 (akis,tablo) cifti."),
+        new("P13", "static readonly alan (L10)", 4, [],
+            "Hicbir soru tasimiyor ve tasiyamaz: 4 sitenin hicbiri bir tabloyu, kolonu, koku ya da event'i degistirmiyor. Meta-testte gerekceli bos satir."),
     ];
 
     // ---------------------------------------------------------------- 3x2 boxes
