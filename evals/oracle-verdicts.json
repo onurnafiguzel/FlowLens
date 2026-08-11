@@ -1,0 +1,85 @@
+{
+  "procedure": "Gerceklesen HER kacirma, rapora yazilmadan ONCE tek adimlik bir capraz kontrolden gecer: (1) notes.evidence zincirindeki file:line'a git - beklenen deger gercekten orada mi? (2) migration zinciri (CreateTable + AddColumn/DropColumn) o kolonu gercekten uretiyor mu? Sonuc iki degerden biridir: oracle-dogrulandi (beklenen deger kaynakta var, kacirma TOOL'a ait) ya da oracle-duzeltildi (beklenen deger yanlisti - EVAL SET'in kendi kusuru).",
+  "correctionRule": "oracle-duzeltildi olan her kalem, duzeltmeyi CURUTEN ModularCommerce file:line'ini tasimak ZORUNDADIR. Ciktinin kendisi bir gerekce degildir. Duzeltme questions.json'a AYRI bir commit'te girer.",
+  "round": "Ilk kosu, duzeltmelerden SONRA. Bu turdan once uc oracle-duzeltildi cikti ve uygulandi: Q19 (kok kumesi, fcbf026), Q06 (dis depo, ab6702c), Q01 (dis depo, edec2f0). Onlar bu dosyada DEGIL - questions.json'in git gecmisindeler.",
+  "verdicts": [
+    {
+      "question": "Q01",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "OrderConfiguration.cs:41-45 (OwnsOne Money -> UnitPrice + Currency) · CheckoutHandler.cs:36,55,207,211 (GetByIdempotencyKeyAsync + OrderResponse.FromOrder) · DomainEventToOutboxInterceptor.cs:59-64",
+      "note": "12 kacirma, 3 fazladan. order_lines.UnitPrice/Currency migration'da VAR ve EF'in olculen INSERT'inde VAR (phase-7-notes 1, A vakasi) - beklenen 7 dogru; graph'ta o iki kolonun node'u hic yok -> L23. Outbox 7 kolonun 4'u (Id/Type/Content/OccurredOnUtc) hic node degil, 3'u (Error/ProcessedOnUtc/RetryCount) node ama checkout'un alt grafiginden erisilemiyor - Q15 ucunu de buluyor. order_lines/order_status_history RW beklentisi dogru: checkout owned koleksiyonlari hem yaziyor hem okuyor. Fazladan gelen uc .id kolonu L21."
+    },
+    {
+      "question": "Q02",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "CancelOrderHandler.cs:46 (foreach order.Lines) · OrderConfiguration.cs:29,52 (OwnsMany auto-include) · 20260708144210_AddOutboxMessages.cs",
+      "note": "9 kacirma, 2 fazladan. order_lines tablosu tamamen dusuyor cunku cancel onu YALNIZ okuyor (F4/L19). order_status_history RW->W ayni sebep. Outbox 7 kolon L16-4. Fazladan iki .id kolonu L21."
+    },
+    {
+      "question": "Q03",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "ProductVectorRepository.cs:17-24,38 (UPSERT dort kolon, SELECT SourceTextHash) · ProductEmbeddingConfiguration.cs:21 (Ignore Embedding) · 20260715124136_InitialDiscoverySchema.cs:38-39 · 20260715122542_AddCatalogOutbox.cs:17-27",
+      "note": "9 kacirma. Embedding kolonu fiziksel tabloda var (Sql ile eklenmis) ama EF modelinde Ignore -> L5/L6. product_embeddings RW->W: okuma ham SQL, kenar uretmiyor. Catalog outbox 7 kolon L16-4."
+    },
+    {
+      "question": "Q06",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "CachingCartRepository.cs:34 (cache.SetAsync) · RedisCartCache.cs:43 (StringSetAsync, TTL 7 gun)",
+      "note": "1 kacirma. Graph genelinde 1 ExternalCall node var (HttpEmbeddingService); dokuz Redis node'unun dokuzu da Method -> F2/L17 olculerek dogrulandi. Bu soru duzeltmeden ONCE olcumu hic yapamiyordu (eksen kapisi eksikti); duzeltmeden sonra ongoru TUTTU."
+    },
+    {
+      "question": "Q10",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "ProductEmbeddingConfiguration.cs:21 · 20260715124136_InitialDiscoverySchema.cs:38-39 · ProductVectorRepository.cs:17-24",
+      "note": "2 kacirma. Q03 ile ayni sinif, bu kez olay koprüsünün ucundan gorunuyor."
+    },
+    {
+      "question": "Q12",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "ProductVectorRepository.cs:53-58 (SELECT \"ProductId\", 1 - (\"Embedding\" <=> @q))",
+      "note": "3 kacirma. Tablo tamamen dusuyor: bu akisin tabloya TEK erisimi ham SQL, dolayisiyla hic kenar yok. Iki okunan kolon kolon-okuma satirinda; ColumnsByTable yalniz Writes'a baktigi icin bu sinifin recall'i yapisal olarak 0. phase3-validation.md 4 ayni sonucu elle olcmustu."
+    },
+    {
+      "question": "Q13",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "Product.cs:83-87 (bes atama) · ProductConfiguration.cs:29-38 (Money -> iki kolon) · ProductRepository.cs:26,30-31 (SaveChanges + cache.RemoveAsync) · RedisProductCache",
+      "note": "10 kacirma, 1 fazladan. Fazladan gelen HttpEmbeddingService beklenen degerin hatasi DEGIL: IEmbeddingService config-secimli (DiscoveryModule.cs:66-74, varsayilan Fake) ve FlowLens ikisini de listeliyor - L3/L11'in kayitli asiri-yaklasimi. Duzeltme expected'a degil ONGORUYE yapildi (L3 + L11 eklendi)."
+    },
+    {
+      "question": "Q15",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "OutboxDispatcher.cs:100 (publisher.Publish(integrationEvent, clrType, ct)) · OrderingIntegrationEventRegistry.cs:36-37",
+      "note": "2 kacirma, ikisi de event ekseninde. Dispatcher fiziksel olarak iki event yayinliyor; koprü bilerek raise site'a atfedildi -> L22. Tablo/kolon tarafi TAM GECTI: outbox UPDATE'inin uc kolonu (Error/ProcessedOnUtc/RetryCount) bulundu - kontrol vakasi tuttu."
+    },
+    {
+      "question": "Q16",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "SearchEndpoints.cs:17 -> SearchProductsHandler.cs:35 -> ProductVectorRepository.cs:53 (ham SQL, kenar yok)",
+      "note": "2 kacirma. Kok kaybi F6/L6. Ikinci kalem bir MEKANIZMA bulgusu: raw-sql sinir kodu diagnostics'in dosyasini alt graftaki dosyalarla esleyerek uretiliyor (AnswerBuilder.cs:405,415). Ileri yonde calisiyor; geri yonde alt graf o dosyaya hic ugramadigi icin uyari YAPISAL olarak cikamiyor."
+    },
+    {
+      "question": "Q17",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "RedisDistributedLock.cs:31 (StringSetAsync, When.NotExists) · InventoryModule.cs:54-56",
+      "note": "1 kacirma. Kok kumesi 7/7 tam gecti; yalniz dis depo tiplemesi dusuyor -> F2/L17."
+    },
+    {
+      "question": "Q18",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "RedisCartCache.cs:43 (StringSetAsync) · CartModule.cs:29-32",
+      "note": "1 kacirma. Kok kumesi 5/5 tam gecti, dekorator zincirinin iki tipi de listelendi; yalniz dis depo tiplemesi dusuyor -> F2/L17."
+    },
+    {
+      "question": "Q20",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "CancelOrderHandler.cs:46 · OrderResponse.cs:21 · OrderQueries.cs:29 · OrderReservationReconciler.cs:23 (SelectMany(o => o.Lines))",
+      "note": "4 kacirma. Dordunun de okuma noktasi kaynakta tek tek dogrulandi. Yalniz yazma yolu (checkout) bulunuyor -> F4/L19. Owned navigasyon okumasinin sozdiziminde DbSet yok, cunku oyle bir DbSet de yok."
+    },
+    {
+      "question": "Q22",
+      "verdict": "oracle-dogrulandi",
+      "sourceEvidence": "OrderResponse.cs:17 · OrderQueries.cs:26 · OrderReservationReconciler.cs:22 (Where(o => o.Status == OrderStatus.Paid))",
+      "note": "3 kacirma. Ucunun de okuma noktasi kaynakta dogrulandi. Geri yuruyus kolona GIREN kenarlari gezdigi icin yalniz iki yaziciyi buluyor -> F9/L18-2. Saf recall kaybi, precision kaybi degil."
+    }
+  ]
+}

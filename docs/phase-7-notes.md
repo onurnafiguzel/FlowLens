@@ -211,6 +211,41 @@ uyuşmazlığı `6 beklenen · 0 bulunan · %0` diye okunuyordu — ölçülende
 uyuşan 31 hakkında hiçbir şey söylemiyor. Popülasyon **bulunan tablolar** olarak düzeltildi:
 `37 · 31 · %83,8`. Sessizce düzeltilmedi, ayrı commit'e kondu.
 
+### Tek satırda "7 kaçırıldı" iki farklı sebebi gizliyor
+
+Q01 ve Q02, `ordering.outbox_messages`'ın **yedi kolonunun yedisini de** kaçırıyor. Tek satır
+tek bir sebep varmış gibi okunuyor; ölçüm iki tane gösterdi.
+
+| Kolon | Graph'ta node var mı | Neden kaçırıldı |
+|---|---|---|
+| `Id`, `Type`, `Content`, `OccurredOnUtc` | **hayır** | Interceptor gövdesi hiçbir akışın erişilebilir kümesinde değil — **L16-4** |
+| `Error`, `ProcessedOnUtc`, `RetryCount` | **evet** | Node var ama checkout'un alt grafiğinden **erişilemiyor**; `OutboxDispatcher`'dan geliyorlar |
+
+İkinci satırın kanıtı aynı koşuda: **Q15 üçünü de buluyor.** Yani "outbox kolonları görünmüyor"
+cümlesi yanlış — üçü görünüyor, sadece başka bir kökten. L16-4'ün gerçek kapsamı yedi değil
+**dört** kolon.
+
+> Kaçırma sayısı bir mekanizma sayısı değil. Aynı hücrede iki farklı sebep toplanabiliyor ve
+> rapor bunu ayırt etmiyor; ayırt eden şey soru soru okumak oldu.
+
+### `raw-sql` uyarısı geri sorularda yapısal olarak çıkmıyor
+
+Q16 (`discovery.product_embeddings` geri sorusu) beklenen `raw-sql` sınır kodunu **almadı**.
+Sebep F6/L6'nın kapsamında ama mekanizması ayrı ve kayda değer.
+
+`Limitations`, build diagnostics'ini **alt graftaki dosyalarla eşleştirerek** üretiyor
+(`AnswerBuilder.cs:405,415`): bir diagnostic'in `file:line`'ı, cevabın ulaştığı düğümlerden
+birinin dosyasıyla örtüşüyorsa o cevabın sınırı sayılıyor.
+
+- **İleri yönde çalışıyor:** `POST /api/discovery/search` akışı `ProductVectorRepository.cs`'e
+  uğrar, dosya eşleşir, uyarı çıkar.
+- **Geri yönde çıkamıyor:** ham SQL zaten kenar üretmediği için geri yürüyüş o dosyaya **hiç
+  uğramaz**, dolayısıyla eşleşecek dosya yoktur.
+
+Sonuç: *"bu tabloya bakamadığım bir yer var"* uyarısı **tam da en çok gerekli olduğu yerde** —
+"bu tabloya kim dokunuyor?" sorusunda — yapısal olarak üretilemiyor. Faz 3'ün *"graph
+'dokunmuyor' demez, 'bakamadım' der"* kuralı geri yönde tutmuyor.
+
 ### Sol-alt kutu artık boş — ve bu bir başarı değil
 
 Düzeltmelerden sonra öngörülmeyen kaçırma **kalmadı**. Yani bu koşuda eval, FlowLens hakkında

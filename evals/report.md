@@ -90,9 +90,9 @@ Birim **soru**, öngörü değil: bir öngörüyü belirli bir kaçırmaya bağl
 | kolon-yazma — kolon | EF içi | 68 | 59 | 3 |
 | dis depo — dis depo | — | 1 | 0 | 0 |
 
-**Öngörülen kaçırmalar:** `F2` · `F4` · `F5` · `L16-4` · `L17` · `L19` · `L21`
+**Öngörülen kaçırmalar:** `F2` · `F4` · `F5` · `L16-4` · `L17` · `L19` · `L21` · `L23`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: OrderConfiguration.cs:41-45 (OwnsOne Money -> UnitPrice + Currency) · CheckoutHandler.cs:36,55,207,211 (GetByIdempotencyKeyAsync + OrderResponse.FromOrder) · DomainEventToOutboxInterceptor.cs:59-64
 
 Gerçekleşen kaçırmalar:
 
@@ -127,7 +127,7 @@ Fazladan gelenler (precision kaybı):
 
 **Öngörülen kaçırmalar:** `F4` · `F5` · `L16-4` · `L19` · `L21`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: CancelOrderHandler.cs:46 (foreach order.Lines) · OrderConfiguration.cs:29,52 (OwnsMany auto-include) · 20260708144210_AddOutboxMessages.cs
 
 Gerçekleşen kaçırmalar:
 
@@ -160,7 +160,7 @@ Fazladan gelenler (precision kaybı):
 
 **Öngörülen kaçırmalar:** `F5` · `F7` · `L16-4` · `L5` · `L6`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: ProductVectorRepository.cs:17-24,38 (UPSERT dort kolon, SELECT SourceTextHash) · ProductEmbeddingConfiguration.cs:21 (Ignore Embedding) · 20260715124136_InitialDiscoverySchema.cs:38-39 · 20260715122542_AddCatalogOutbox.cs:17-27
 
 Gerçekleşen kaçırmalar:
 
@@ -211,7 +211,7 @@ Kaçırma **yok**.
 
 **Öngörülen kaçırmalar:** `F2` · `L17`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: CachingCartRepository.cs:34 (cache.SetAsync) · RedisCartCache.cs:43 (StringSetAsync, TTL 7 gun)
 
 Gerçekleşen kaçırmalar:
 
@@ -263,7 +263,7 @@ Kaçırma **yok**.
 
 **Öngörülen kaçırmalar:** `F7` · `L5` · `L6`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: ProductEmbeddingConfiguration.cs:21 · 20260715124136_InitialDiscoverySchema.cs:38-39 · ProductVectorRepository.cs:17-24
 
 Gerçekleşen kaçırmalar:
 
@@ -293,7 +293,7 @@ Kaçırma **yok**.
 
 **Öngörülen kaçırmalar:** `F6` · `F9` · `L18-2` · `L6`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: ProductVectorRepository.cs:53-58 (SELECT "ProductId", 1 - ("Embedding" <=> @q))
 
 Gerçekleşen kaçırmalar:
 
@@ -316,9 +316,9 @@ Gerçekleşen kaçırmalar:
 | dis depo — dis depo | — | 1 | 0 | 1 |
 | sinir — sinir kodu | — | 4 | 4 | — |
 
-**Öngörülen kaçırmalar:** `F2` · `F5` · `F7` · `L16-4` · `L17` · `L5` · `L6`
+**Öngörülen kaçırmalar:** `F2` · `F5` · `F7` · `L11` · `L16-4` · `L17` · `L3` · `L5` · `L6`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: Product.cs:83-87 (bes atama) · ProductConfiguration.cs:29-38 (Money -> iki kolon) · ProductRepository.cs:26,30-31 (SaveChanges + cache.RemoveAsync) · RedisProductCache
 
 Gerçekleşen kaçırmalar:
 
@@ -362,7 +362,7 @@ Kaçırma **yok**.
 
 **Öngörülen kaçırmalar:** `L22`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: OutboxDispatcher.cs:100 (publisher.Publish(integrationEvent, clrType, ct)) · OrderingIntegrationEventRegistry.cs:36-37
 
 Gerçekleşen kaçırmalar:
 
@@ -382,7 +382,7 @@ Gerçekleşen kaçırmalar:
 
 **Öngörülen kaçırmalar:** `F6` · `L6`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: SearchEndpoints.cs:17 -> SearchProductsHandler.cs:35 -> ProductVectorRepository.cs:53 (ham SQL, kenar yok)
 
 Gerçekleşen kaçırmalar:
 
@@ -403,7 +403,7 @@ Gerçekleşen kaçırmalar:
 
 **Öngörülen kaçırmalar:** `F2` · `L17`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: RedisDistributedLock.cs:31 (StringSetAsync, When.NotExists) · InventoryModule.cs:54-56
 
 Gerçekleşen kaçırmalar:
 
@@ -423,7 +423,7 @@ Gerçekleşen kaçırmalar:
 
 **Öngörülen kaçırmalar:** `F2` · `L17`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: RedisCartCache.cs:43 (StringSetAsync) · CartModule.cs:29-32
 
 Gerçekleşen kaçırmalar:
 
@@ -453,7 +453,7 @@ Kaçırma **yok**.
 
 **Öngörülen kaçırmalar:** `F4` · `L19`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: CancelOrderHandler.cs:46 · OrderResponse.cs:21 · OrderQueries.cs:29 · OrderReservationReconciler.cs:23 (SelectMany(o => o.Lines))
 
 Gerçekleşen kaçırmalar:
 
@@ -486,7 +486,7 @@ Kaçırma **yok**.
 
 **Öngörülen kaçırmalar:** `F9` · `L18-2`
 
-**Oracle:** `beklemede`
+**Oracle:** `oracle-dogrulandi` — kanıt: OrderResponse.cs:17 · OrderQueries.cs:26 · OrderReservationReconciler.cs:22 (Where(o => o.Status == OrderStatus.Paid))
 
 Gerçekleşen kaçırmalar:
 
@@ -494,7 +494,7 @@ Gerçekleşen kaçırmalar:
 - kok: GET /api/ordering/orders/{id:guid}
 - kok: ReservationTtlSweeper.ExecuteAsync
 
-## 7. Meta-test — F1..F10 ve L1..L22
+## 7. Meta-test — F1..F10 ve L1..L23
 
 Boş satır, gerekçesi yazılmadıkça eval set'in eksik olduğu anlamına gelir.
 
@@ -520,7 +520,7 @@ Boş satır, gerekçesi yazılmadıkça eval set'in eksik olduğu anlamına geli
 | L8 | — | Yapisal garanti, cevap dogrulugu degil. Mevcut suite'te ThinningUtilityNodesNeverChangesWhatIsReachable 41 sorguda sabitliyor. |
 | L9 | Q03, Q14 | — |
 | L10 | — | Olculdu: 4 site (CheckoutHandler.cs:60,175 - CardPaymentStrategy.cs:45,50). Hicbiri bir tabloyu, kolonu, koku ya da event'i degistirmiyor - cevap duzeyinde olculebilir etkisi YOK, dolayisiyla onu gorunur kilan bir soru YAZILAMAZ. |
-| L11 | Q09, Q18 | — |
+| L11 | Q09, Q13, Q18 | — |
 | L12 | — | Tek ornek (CardPaymentStrategy). Popülasyon 1: kategori degil yalniz o ornek olculebilirdi. |
 | L13 | Q01, Q06 | — |
 | L14 | — | Ortam kosulu (EF surum kapisi). EfPreflight build'i durdurur; cevap dogrulugu sorusu degil. |
@@ -532,6 +532,7 @@ Boş satır, gerekçesi yazılmadıkça eval set'in eksik olduğu anlamına geli
 | L20 | — | Calisma zamani olgusu (JIT inlining). Statik eval yapisal olarak goremez. |
 | L21 | Q01, Q02 | — |
 | L22 | Q15 | — |
+| L23 | Q01 | — |
 
 ## 8. Ölçülemeyen sınıflar
 
@@ -550,8 +551,8 @@ Eval "kaçırma" dediğinde iki hipotez var: tool kaçırdı, ya da elle çıkar
 
 | Sonuç | Adet |
 |---|---:|
-| `oracle-dogrulandi` — beklenen değer kaynakta var, kaçırma tool'a ait | 0 |
+| `oracle-dogrulandi` — beklenen değer kaynakta var, kaçırma tool'a ait | 13 |
 | `oracle-duzeltildi` — beklenen değer yanlıştı, **bulgu** | 0 |
-| `beklemede` — çapraz kontrol henüz yapılmadı | 13 |
+| `beklemede` — çapraz kontrol henüz yapılmadı | 0 |
 
 > Bir düzeltme `evals/oracle-verdicts.json`'a yazılır ve ModularCommerce `file:line` kanıtı taşımak ZORUNDADIR — çıktı bir gerekçe değildir. Düzeltme `questions.json`'a AYRI bir commit'te girer, runner commit'ine karışmaz; böylece "beklenen değer çıktıya uydurulmuş mu?" sorusu tek bir `git log` ile cevaplanır.
