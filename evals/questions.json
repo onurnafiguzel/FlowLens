@@ -207,7 +207,8 @@
         "columnKind": "write",
         "tables": [
           { "name": "cart.carts", "access": "RW", "operation": "INSERT|UPDATE", "columns": ["CustomerId", "Items", "UpdatedAtUtc"] }
-        ]
+        ],
+        "externalStores": ["RedisCartCache"]
       },
       "expectedToFail": [
         { "id": "F2", "closedIn": null },
