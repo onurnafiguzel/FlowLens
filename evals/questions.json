@@ -47,7 +47,8 @@
         { "id": "F2", "closedIn": null },
         { "id": "L17", "closedIn": null },
         { "id": "F4", "closedIn": null },
-        { "id": "L19", "closedIn": null }
+        { "id": "L19", "closedIn": null },
+        { "id": "L23", "closedIn": null }
       ],
       "notes": {
         "derivation": "endpoint -> handler -> repository/servis -> DbSet erisimi ya da entity mutasyonu -> configuration ToTable -> migration+snapshot kolon listesi -> operasyon turu kolon kumesini belirler.",

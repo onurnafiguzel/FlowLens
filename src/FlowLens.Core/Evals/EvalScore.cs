@@ -324,7 +324,7 @@ public static class EvalScore
         var blanks = ReasonedBlanks.ToDictionary(b => b.Id, b => b.Reason, StringComparer.Ordinal);
 
         var ids = Enumerable.Range(1, 10).Select(i => $"F{i}")
-            .Concat(Enumerable.Range(1, 22).Select(i => $"L{i}"))
+            .Concat(Enumerable.Range(1, 23).Select(i => $"L{i}"))
             .ToList();
 
         return

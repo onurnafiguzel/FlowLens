@@ -880,6 +880,64 @@ Eval bunu `expectedToFail: L22` ile **öngörülen** kayıp olarak raporluyor.
 
 ---
 
+## L23 — Owned koleksiyonun İÇİNDEKİ owned tipin kolonları node olarak üretilmiyor
+
+**Durum:** Açık, **ölçüldü**, **düzeltilebilir**.
+**Keşfedildiği yer:** Faz 7, Q01'in oracle çapraz kontrolü.
+**Sınıf:** recall kaybı — kolon düzeyi.
+
+Bir value object'in kolonlara açılması FlowLens'te **üç biçimin ikisinde** çalışıyor. Kırılan tek
+biçim, bir **owned koleksiyonun içine yerleştirilmiş** owned tip.
+
+### Kapsam — dördün üçü çalışıyor
+
+| Site | Biçim | Kolonlar | Graph'ta |
+|---|---|---|---|
+| `ProductConfiguration.cs:29` | `ComplexProperty` | `catalog.products.price_amount`, `.price_currency` | ✅ ikisi de |
+| `PaymentConfiguration.cs:32` | `ComplexProperty` | `payment.payments.Amount`, `.Currency` | ✅ ikisi de |
+| `CartConfiguration.cs:18` · `OrderConfiguration.cs:52` · `PaymentConfiguration.cs:54` | üst düzey `OwnsMany` | kendi skaler kolonları | ✅ |
+| **`OrderConfiguration.cs:41-45`** | **`OwnsMany` içinde `OwnsOne`** | `ordering.order_lines.UnitPrice`, `.Currency` | ❌ **hiçbiri** |
+
+Yani sınır ne "value object'ler görünmez" ne de "owned tipler görünmez" — ikisi de görünüyor.
+Görünmeyen **yalnız iç içe olan**.
+
+### Ölçülen etki — popülasyon 1 site / 2 kolon
+
+`order_lines`'ın graph'taki kolon düğümleri: `ProductId`, `ProductName`, `Quantity`,
+`ReservationId`, `id`, `order_id`. `UnitPrice` ve `Currency` **erişilemez değil, hiç yok** —
+node üretilmemiş.
+
+`RowInsert` kuralı da doldurmuyor: iç owned tip EF modelinde **ayrı bir entity tipi**, dolayısıyla
+`order_lines`'ın "kalan kolonları" listesine girmiyor. Kolonlar hem atamadan hem satır düzeyi
+kuraldan kaçıyor.
+
+Migration ve EF'in gerçek SQL'i ikisini de doğruluyor:
+
+```
+order_lines: UnitPrice numeric(18,2), Currency varchar(3)      (InitialOrderingSchema.cs)
+INSERT INTO ordering.order_lines (...,"UnitPrice","Currency")  (phase-7-notes.md 1, A vakasi)
+```
+
+### Neden bu biçim seçilmiş
+
+Kaynağın kendi yorumu söylüyor (`OrderConfiguration.cs:39-40`): *"Owned koleksiyon içinde
+`ComplexProperty` desteklenmediğinden Money iç owned tip (`OwnsOne`) olarak aynı tabloya eşlenir."*
+Yani hedef repo bu biçmi tercih etmedi, EF onu zorunlu kıldı — aynı sınıf kod başka bir kod
+tabanında da bu şekilde görünecektir.
+
+### Popülasyon tek örnek
+
+Bir site, iki kolon. Bu sınırı gösteren eval sorusu (Q01) **kategoriyi değil yalnız bu örneği**
+ölçüyor; roadmap'in tek-örnek kuralı burada da geçerli.
+
+> **Neden Faz 3 bunu görmedi.** `phase3-validation.md` kolon recall'ını **tablo başına** ölçtü ve
+> `order_lines` için beklenen listeyi ATAMADAN türetti — `UnitPrice = unitPrice` bir Money
+> atamasıdır, iki kolon değil. Beklenen de eksik olduğu için fark sıfır göründü. Doğru soru
+> *"bu tablonun kolonlarının kaçı graph'ta?"* idi; sorulan *"attığım atamaların kaçı kolona
+> bağlandı?"*
+
+---
+
 ## L6 — Statik analizin yapısal olarak göremedikleri
 
 **Durum:** Kalıcı sınır. Faz 5 eval setinde kategori olarak ölçülecek.

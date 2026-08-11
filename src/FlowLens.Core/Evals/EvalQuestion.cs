@@ -196,6 +196,9 @@ public static class FailureAxis
         ["L5"] = [Tables],
         ["L21"] = [Tables],
 
+        // Owned type nested inside an owned collection: its columns never become nodes at all.
+        ["L23"] = [Tables],
+
         // Evidence quality is scored over expected write columns.
         ["F7"] = [Tables],
 

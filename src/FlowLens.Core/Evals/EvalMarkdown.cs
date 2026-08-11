@@ -262,7 +262,7 @@ public static class EvalMarkdown
 
     private static void MetaTable(StringBuilder text, EvalScorecard card)
     {
-        text.Append("## 7. Meta-test — F1..F10 ve L1..L22\n\n");
+        text.Append("## 7. Meta-test — F1..F10 ve L1..L23\n\n");
         text.Append("Boş satır, gerekçesi yazılmadıkça eval set'in eksik olduğu anlamına gelir.\n\n");
         text.Append("| Sınıf | Görünür kılan soru | Gerekçeli boşluk |\n|---|---|---|\n");
 
