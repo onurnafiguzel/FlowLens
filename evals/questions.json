@@ -640,27 +640,29 @@
       "category": "backward-roots",
       "population": {
         "class": "P8",
-        "count": 1,
-        "representative": false,
-        "howCounted": "Kok kumesi YALNIZ Consumer olan tek tablo. notification_logs benzer gorunuyor ama bir dev endpoint'i de var (NotificationDevEndpoints.cs:18), yani karisik. Tek ornek oldugu icin bu soru kategoriyi degil yalniz bu ornegi olcer."
+        "count": 3,
+        "representative": true,
+        "howCounted": "Kok kumesinde Consumer BULUNAN tablo sayisi: discovery.product_embeddings, notification.notification_logs, notification.processed_messages. Ucunun de kok kumesi KARISIK - graph genelinde yalniz-consumer tablo YOK (olculdu: 0). Q16 birincisini, Q19 ucuncusunu orkler."
       },
       "expected": {
         "roots": {
-          "endpoint": [],
+          "endpoint": ["POST /api/ordering/checkout"],
           "consumer": ["OrderPaidNotificationConsumer.Consume"],
           "backgroundJob": []
         }
       },
       "expectedToFail": [],
       "notes": {
-        "derivation": "Ayni geri zincir.",
+        "derivation": "Ayni geri zincir. Olay siniri IConsumer<T> -> registry -> raise site zinciriyle GERI yonde de gecilir; ileri yonde gecilen bir koprünun geri yonde gecilmemesi celiski olurdu.",
         "evidence": [
           "NotificationProcessor.cs:24,53 (ProcessedMessages'a dokunan tek yer)",
           "NotificationModule.cs:44 (INotificationProcessor -> NotificationProcessor, tek kayit)",
-          "OrderPaidNotificationConsumer.cs:24 (processor.ProcessAsync - tek cagiran)",
+          "OrderPaidNotificationConsumer.cs:8,24 (IConsumer<OrderPaid>; processor.ProcessAsync - tek cagiran)",
+          "Order.cs:136 (Raise(new OrderPaid(...)) - checkout'un MarkPaid yolu)",
+          "OrderingIntegrationEventRegistry.cs:21-25 (OrderPaid domain -> integration eslemesi)",
           "NotificationDevEndpoints.cs:23 (dev endpoint YALNIZ NotificationLogs okuyor, processed_messages'a dokunmuyor)"
         ],
-        "why": "Bos endpoint ve bos backgroundJob listesi PRECISION iddiasi: bu tabloya endpoint'ten ulasildigini soyleyen bir cevap yanlis olur."
+        "why": "Bos backgroundJob listesi PRECISION iddiasi olarak kaliyor. Endpoint listesi ARTIK BOS DEGIL: checkout, OrderPaid koprüsu uzerinden bu tablonun gercek bir giris noktasi - Q01 ayni koprüyu ILERI yonde zaten iddia ediyor (checkout -> notification.processed_messages) ve o iddia dogrulandi. Ilk yazimda endpoint: [] yazilmisti; celiski tool'da degil oracle'daydi."
       }
     },
     {
