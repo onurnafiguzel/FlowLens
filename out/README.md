@@ -1,6 +1,6 @@
 <!-- ÜRETİLMİŞ DOSYA — elle düzenlemeyin. `flowlens docs` ile yeniden üretilir. -->
 
-# ModularCommerce — akış haritası
+# ModularCommerce akış haritası
 
 `flowlens docs` ile `graph.json`'dan üretildi. Elle düzenlenmez; her üretim
 aynı girdiden aynı baytları verir.
