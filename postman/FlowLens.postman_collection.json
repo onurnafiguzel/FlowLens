@@ -1,0 +1,1702 @@
+{
+  "info": {
+    "_postman_id": "f10f1e45-0a1b-4c7d-9e21-flowlens0001",
+    "name": "FlowLens API",
+    "description": "# FlowLens API\n\nModularCommerce'in akış haritasını `graph.json` üzerinden sorgulayan beş endpoint.\n\n## Çalıştırma\n\n```bash\ndotnet run --project src/FlowLens.Api -c Release\n```\n\n**Port 5000.** (`docs/flowlens-api.http` 5100 diyor ama projede `launchSettings.json`, `appsettings.json` ve `UseUrls` yok; Kestrel varsayılanı 5000. 5100 istiyorsan `-- --urls http://localhost:5100` ekle.)\n\n## Önemli davranışlar\n\n- **API asla solution yüklemez.** Bir istek asla build çalıştırmaz. Cevaplar `graph.json`'dan gelir.\n- **Graph otomatik tazelenir.** Her istekte `mtime + dosya uzunluğu` kontrol edilir; `flowlens build` koşarsan API'yi yeniden başlatmana gerek yok.\n- **`dataLayer` yalnız forward, `entryPoints` yalnız backward cevabında bulunur.** Bu bir konvansiyon değil, tip seviyesinde garanti — diğer yön alanı hiç taşımaz. Koleksiyondaki testler bunu doğruluyor.\n- **Boş küme bir cevaptır.** `GET /api/catalog/products` sıfır kolon döndürür ve bu doğrudur. Ama \"bakamadım\" ayrı bir şeydir ve `limitations` altında adıyla çıkar.\n- **Graph yoksa veri uçları 503, `/graph/stats` yine 200 döner** ve `status: \"unavailable\"` der. \"Neden her şey bozuk\" sorusu her şey 503'ken cevaplanabilmeli.\n\n## Node id'leri\n\n`node` parametresi hem route'u hem node id'sini kabul eder:\n\n| Biçim | Örnek |\n|---|---|\n| Route | `POST /api/ordering/checkout` |\n| Endpoint id | `endpoint:POST /api/ordering/checkout` |\n| Tablo | `table:ordering.orders` |\n| Kolon | `column:ordering.orders.Status` |\n| Entity | `entity:ModularCommerce.Cart.Infrastructure.Persistence.CartRecord` |\n| Metot | tam imza, öneksiz |\n\nId'ler boşluk, `/`, `:`, `{}` taşır. Postman bunları query string'de otomatik kodlar — değişkenleri **ham** tut, elle `%20` yazma. Path segmenti kullanılmıyor çünkü Kestrel path içindeki `%2F`'yi varsayılan olarak reddeder.\n\n## Klasörler\n\n| # | Klasör | Ne sorar |\n|---|---|---|\n| 1 | `/graph/stats` | Graph ayakta mı, ne zaman üretildi, hangi dosya okundu |\n| 2 | `/endpoints` | Hangi endpoint'ler var |\n| 3 | `/tables` | Hangi tablolar var, tüm graph üzerinden erişim |\n| 4 | `/trace` | Bu node neye dokunuyor (ileri) |\n| 5 | `/backward` | Bu node'a kim dokunuyor (geri) |\n| 6 | Hata yolları | 400 / 404 / 503 davranışları |\n| 7 | Senaryolar | Zincirli akışlar — Collection Runner ile |\n\n**Önerilen sıra:** önce `1`'i koş (graph ayakta mı), sonra `2`'yi (değişkenleri doldurur), sonra gerisini.\n\n## Collection Runner\n\nKoleksiyonun tamamı Runner'da soldan sağa koşacak şekilde yazıldı. `2` ve `4` klasörleri sonraki isteklerin kullandığı değişkenleri dolduruyor. Klasör `7` `setNextRequest` ile kendi zincirini kuruyor.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:5000",
+      "type": "string",
+      "description": "API kökü. Ölçüldü: launchSettings yok, Kestrel varsayılanı 5000."
+    },
+    {
+      "key": "module",
+      "value": "Ordering",
+      "type": "string",
+      "description": "Modül filtresi. Geçerli değerler: Ordering, Cart, Catalog, Inventory, Payment, Notification, Discovery, Identity, Shipping, Shared."
+    },
+    {
+      "key": "nodeCheckout",
+      "value": "POST /api/ordering/checkout",
+      "type": "string",
+      "description": "Hedefteki en derin akış: 12 tablo, 62 kolon, zincir derinliği 10."
+    },
+    {
+      "key": "nodeCartDelete",
+      "value": "DELETE /api/cart/items/{productId:guid}",
+      "type": "string",
+      "description": "docs/walkthrough-cart-delete.md'de uçtan uca anlatılan akış."
+    },
+    {
+      "key": "nodeCatalogList",
+      "value": "GET /api/catalog/products",
+      "type": "string",
+      "description": "Kontrast vakası: tablo var, kolon YOK. Bu bir okuma ve doğru cevap boş küme."
+    },
+    {
+      "key": "nodeDiscoverySearch",
+      "value": "POST /api/discovery/search",
+      "type": "string",
+      "description": "EF dışı akış: ham SQL. Tablo recall'ı %0 ve kayıp limitations'ta ilan ediliyor."
+    },
+    {
+      "key": "nodeOrdersTable",
+      "value": "table:ordering.orders",
+      "type": "string",
+      "description": "Karışık kök: 4 endpoint + 1 arka plan işi."
+    },
+    {
+      "key": "nodeCartsTable",
+      "value": "table:cart.carts",
+      "type": "string",
+      "description": "Saf tablo: yalnız endpoint kökleri."
+    },
+    {
+      "key": "nodeStatusColumn",
+      "value": "column:ordering.orders.Status",
+      "type": "string",
+      "description": "Kolon düzeyi geri sorgu: bu kolonu kim YAZIYOR."
+    },
+    {
+      "key": "nodeItemsColumn",
+      "value": "column:cart.carts.Items",
+      "type": "string",
+      "description": "jsonb kapsayıcı kolon (OwnsMany.ToJson). Hiçbir C# ifadesi adlandıramaz."
+    },
+    {
+      "key": "discoveredEndpoint",
+      "value": "",
+      "type": "string",
+      "description": "Klasör 2 doldurur. Klasör 4 ve 7 kullanır."
+    },
+    {
+      "key": "discoveredTable",
+      "value": "",
+      "type": "string",
+      "description": "Klasör 4 doldurur. Klasör 7 kullanır."
+    },
+    {
+      "key": "discoveredColumn",
+      "value": "",
+      "type": "string",
+      "description": "Klasör 4 doldurur."
+    },
+    {
+      "key": "baselineTraversed",
+      "value": "0",
+      "type": "string",
+      "description": "Klasör 4 doldurur; includeUtility karşılaştırması için."
+    },
+    {
+      "key": "graphAvailable",
+      "value": "unknown",
+      "type": "string",
+      "description": "Klasör 1 doldurur. Testler graph yoksa kendini susturmak için okur."
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Koleksiyon geneli ön kontrol. Tek amacı: baseUrl unutulduysa ilk istekte anlaşılsın,",
+          "// on istek sonra 'neden hep ECONNREFUSED' diye aranmasın.",
+          "const base = pm.collectionVariables.get('baseUrl');",
+          "if (!base) {",
+          "    throw new Error('baseUrl bos. Collection > Variables altinda ayarla, ornek: http://localhost:5000');",
+          "}"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Her istek icin gecerli olan uc kural. Buradakiler HER istekte kosar, hata yollari dahil,",
+          "// o yuzden yalnizca yon bagimsiz olanlar burada durur.",
+          "",
+          "pm.test('Sunucu 5xx dondurmedi', function () {",
+          "    pm.expect(pm.response.code, 'API kendi icinde patlamamali - bilinen her hata durumu 400/404/503 ile ifade edilir').to.be.below(500);",
+          "});",
+          "",
+          "pm.test('Cevap JSON', function () {",
+          "    const ct = pm.response.headers.get('Content-Type') || '';",
+          "    pm.expect(ct).to.match(/json/i);",
+          "});",
+          "",
+          "pm.test('Cevap 2 saniyeden hizli', function () {",
+          "    // Olculen: 0,4-1,9 ms. 2000 ms sinir degil, 'bir yerde solution yukleniyor' alarmi.",
+          "    pm.expect(pm.response.responseTime).to.be.below(2000);",
+          "});"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "1 · /graph/stats — Durum ve tanılama",
+      "description": "**Buradan başla.** `/graph/stats` parametre almaz, dolayısıyla klasörde tek istek var — aynı cevaba üç kez istek atmak sayıyı şişirir, kapsamı değil.\n\nBu uç koleksiyondaki tek \"her koşulda 200\" ucudur ve `graphAvailable` değişkenini doldurur; diğer klasörlerin testleri graph yoksa kendilerini bu değişkene bakarak susturur.",
+      "item": [
+        {
+          "name": "1.1 · Graph durumu, bayatlık ve duran sınırlar",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('Graph yoksa bile 200 doner', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test(\"status 'ok' ya da 'unavailable'\", function () {",
+                  "    pm.expect(b.status).to.be.oneOf(['ok', 'unavailable']);",
+                  "});",
+                  "",
+                  "// Sonraki testler graph yoksa kendini sustursun diye kaydediliyor.",
+                  "pm.collectionVariables.set('graphAvailable', b.status);",
+                  "",
+                  "if (b.status === 'unavailable') {",
+                  "    console.warn('GRAPH YOK. Sebep: ' + b.loadError);",
+                  "    console.warn('Denenen yollar: ' + JSON.stringify(b.attemptedPaths));",
+                  "    console.warn('Cozum: flowlens build <solution-path> -o graph.json');",
+                  "    pm.test('Kullanilamaz durumda bile sebep ve denenen yollar var', function () {",
+                  "        pm.expect(b.loadError, 'sessiz basarisizlik yasak').to.be.a('string').and.not.empty;",
+                  "        pm.expect(b.attemptedPaths).to.be.an('array').that.is.not.empty;",
+                  "    });",
+                  "    return;",
+                  "}",
+                  "",
+                  "pm.test('Hangi dosyanin okundugu yaziyor', function () {",
+                  "    // CurrentDirectory ile ContentRootPath ayrisabilir; hangisinin kazandigi gorunur olmali.",
+                  "    pm.expect(b.graphFilePath, 'graphFilePath').to.be.a('string').and.not.empty;",
+                  "    pm.expect(b.graphFileBytes).to.be.above(0);",
+                  "});",
+                  "",
+                  "pm.test('Sema surumu bu build tarafindan okunabiliyor', function () {",
+                  "    pm.expect(b.schemaVersion).to.eql(1);",
+                  "});",
+                  "",
+                  "pm.test('Node tipleri bekleneni tasiyor', function () {",
+                  "    ['Endpoint', 'Table', 'Column', 'Handler', 'Repository'].forEach(function (k) {",
+                  "        pm.expect(b.nodesByType, k + ' node tipi').to.have.property(k);",
+                  "        pm.expect(b.nodesByType[k], k).to.be.above(0);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Kenar tipleri bekleneni tasiyor', function () {",
+                  "    ['Calls', 'Writes', 'MapsTo', 'Reads'].forEach(function (k) {",
+                  "        pm.expect(b.edgesByType, k + ' kenar tipi').to.have.property(k);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Her veri kenari nasil turetildigini kaydediyor', function () {",
+                  "    // mechanism = None olanlar histograma girmez; kalanlarin hepsi bir iddianin gerekcesi.",
+                  "    pm.expect(Object.keys(b.edgesByMechanism).length, 'mekanizma sayisi').to.be.above(5);",
+                  "    pm.expect(b.edgesByMechanism).to.not.have.property('None');",
+                  "});",
+                  "",
+                  "pm.test('Kok sayisi endpoint sayisindan buyuk (consumer + arka plan isi dahil)', function () {",
+                  "    pm.expect(b.rootCount).to.be.above(b.nodesByType.Endpoint);",
+                  "});",
+                  "",
+                  "// --- Konsola okunabilir ozet ---",
+                  "console.log('--------------------------------------------------');",
+                  "console.log('Solution      : ' + b.solution);",
+                  "console.log('Dosya         : ' + b.graphFilePath + '  (' + Math.round(b.graphFileBytes / 1024) + ' KB)');",
+                  "console.log('Uretim        : ' + b.graphFileWrittenAt);",
+                  "console.log('Yuklenme      : ' + b.loadedAt + '   (reload #' + b.reloadCount + ')');",
+                  "console.log('Node          : ' + Object.values(b.nodesByType).reduce(function (a, c) { return a + c; }, 0));",
+                  "console.log('Kenar         : ' + Object.values(b.edgesByType).reduce(function (a, c) { return a + c; }, 0));",
+                  "console.log('Kok           : ' + b.rootCount + '   ambiguous: ' + b.ambiguousNodes + '   utility: ' + b.utilityNodes);",
+                  "console.log('Bellek        : ~' + Math.round(b.approximateHeapBytes / 1024) + ' KB');",
+                  "console.log('Diagnostics   : ' + b.diagnostics.length + ' satir');",
+                  "console.log('--------------------------------------------------');",
+                  "",
+                  "// ---------- bayatlik ----------",
+                  "",
+                  "",
+                  "const written = new Date(b.graphFileWrittenAt);",
+                  "const ageHours = (Date.now() - written.getTime()) / 36e5;",
+                  "",
+                  "console.log('graph.json yasi: ' + ageHours.toFixed(1) + ' saat');",
+                  "",
+                  "pm.test('graph.json bir tarihe sahip ve gelecekte degil', function () {",
+                  "    pm.expect(isNaN(written.getTime()), 'graphFileWrittenAt parse edilemedi').to.be.false;",
+                  "    pm.expect(ageHours).to.be.at.least(-1);",
+                  "});",
+                  "",
+                  "if (ageHours > 24 * 7) {",
+                  "    console.warn('UYARI: graph 7 gunden eski. ModularCommerce degistiyse cevaplar bayat.');",
+                  "    console.warn('Tazele: flowlens build <solution-path> -o graph.json');",
+                  "}",
+                  "",
+                  "pm.test('Build tanilamalari sessizce yutulmamis', function () {",
+                  "    pm.expect(b.diagnostics).to.be.an('array');",
+                  "});",
+                  "",
+                  "// Ham SQL siteleri, eslenmemis kolonlar, bayat build uyarisi - hepsi burada durur.",
+                  "if (b.diagnostics.length) {",
+                  "    console.log('--- build diagnostics ---');",
+                  "    b.diagnostics.forEach(function (d, i) { console.log((i + 1) + '. ' + d); });",
+                  "}",
+                  "",
+                  "// ---------- duran sinirlar ----------",
+                  "",
+                  "const codes = (b.knownLimitations || []).map(function (l) { return l.code; });",
+                  "",
+                  "pm.test('Dort duran sinir ilan ediliyor', function () {",
+                  "    ['non-relational-store',",
+                  "     'owned-navigation-reads',",
+                  "     'column-reads-not-modelled',",
+                  "     'raw-sql-out-of-scope'].forEach(function (c) {",
+                  "        pm.expect(codes, c).to.include(c);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Her sinir makine okunur bir koda ve bir mesaja sahip', function () {",
+                  "    (b.knownLimitations || []).forEach(function (l) {",
+                  "        pm.expect(l.code, 'kod serbest metin degil').to.be.a('string').and.not.empty;",
+                  "        pm.expect(l.message).to.be.a('string').and.not.empty;",
+                  "        pm.expect(l.locations).to.be.an('array');",
+                  "    });",
+                  "});",
+                  "",
+                  "console.log('--- duran sinirlar ---');",
+                  "(b.knownLimitations || []).forEach(function (l) { console.log('[' + l.code + '] ' + l.message); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/graph/stats",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "graph",
+                "stats"
+              ]
+            },
+            "description": "**Buradan başla.** Tek istek, üç soru: graph ayakta mı · ne zaman üretildi · build sırasında ne bulunamadı.\n\nBu uç graph okunamasa bile **200** döner ve `status: \"unavailable\"` der — kendisiyle birlikte çöken bir tanılama ucu hiçbir işe yaramaz. O durumda gövde `loadError` ve denenen **tüm** yolları taşır; tek bir yanlış yol değil hepsi, çünkü asıl soru \"nereye baktık\" değil \"neden oraya baktık\".\n\n`diagnostics` build'in bilerek temsil edemediği her şeyi taşır: ham SQL siteleri, kolonu olmayan property yazmaları, bayat build uyarısı. Konsola tek tek basılır.\n\n`knownLimitations` **soruya göre değişmeyen** dört sınırı bir kez yayınlar, her cevaba kopyalamaz:\n\n| Kod | Ne demek |\n|---|---|\n| `non-relational-store` | Redis'e yazan akış node üretmez (L17) |\n| `owned-navigation-reads` | Owned koleksiyon okuması READS kenarı üretmez (L19) |\n| `column-reads-not-modelled` | \"Bu kolonu kim okuyor?\" sorusunun karşılığı yok (L18-2) |\n| `raw-sql-out-of-scope` | Ham SQL ile erişilen tablolar görünmez (L6) |\n\n`code` alanı serbest metin değil, sabit bir anahtar."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 · /endpoints — Endpoint envanteri",
+      "description": "Keşfedilen bütün HTTP giriş noktaları. `httpMethod` ve `route` ayrı alanlar — hiçbir çağıranın display name'i parse etmesi gerekmesin diye.\n\nBu klasör `discoveredEndpoint` değişkenini doldurur; klasör 4 ve 7 onu kullanır.",
+      "item": [
+        {
+          "name": "2.1 · Tüm endpoint'ler",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('200', function () { pm.response.to.have.status(200); });",
+                  "",
+                  "pm.test('total ile liste uzunlugu uyusuyor', function () {",
+                  "    pm.expect(b.total).to.eql(b.endpoints.length);",
+                  "});",
+                  "",
+                  "pm.test('Her endpoint konumlanabilir  (filePath + line > 0)', function () {",
+                  "    // graph.json invariant'i: konumu olmayan node yazilmaz. API bunu bozmamali.",
+                  "    b.endpoints.forEach(function (e) {",
+                  "        pm.expect(e.filePath, e.id + ' filePath').to.be.a('string').and.not.empty;",
+                  "        pm.expect(e.filePath, e.id + ' kaynaksiz').to.not.eql('(no source)');",
+                  "        pm.expect(e.line, e.id + ' line').to.be.above(0);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Id ile metot/route alanlari tutarli', function () {",
+                  "    b.endpoints.forEach(function (e) {",
+                  "        pm.expect(e.id, e.id).to.eql('endpoint:' + e.httpMethod + ' ' + e.route);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Cozulemeyen route yok', function () {",
+                  "    // L1 kapandi: 25 endpoint, 0 unresolved. Bu test o kapanisin regresyon kilidi.",
+                  "    const bad = b.endpoints.filter(function (e) { return e.route === '(unresolved)'; });",
+                  "    pm.expect(bad.map(function (e) { return e.id; }), 'cozulemeyen route').to.be.empty;",
+                  "});",
+                  "",
+                  "pm.test('Her route / ile basliyor', function () {",
+                  "    b.endpoints.forEach(function (e) {",
+                  "        pm.expect(e.route, e.id).to.match(/^\\//);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('HTTP metotlari tanidik', function () {",
+                  "    b.endpoints.forEach(function (e) {",
+                  "        pm.expect(e.httpMethod, e.id).to.be.oneOf(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']);",
+                  "    });",
+                  "});",
+                  "",
+                  "// --- Sonraki klasorler icin bir endpoint sakla ---",
+                  "if (b.endpoints.length) {",
+                  "    const picked = b.endpoints.find(function (e) { return e.httpMethod === 'POST'; }) || b.endpoints[0];",
+                  "    pm.collectionVariables.set('discoveredEndpoint', picked.httpMethod + ' ' + picked.route);",
+                  "    console.log('discoveredEndpoint = ' + picked.httpMethod + ' ' + picked.route);",
+                  "}",
+                  "",
+                  "// --- Modul dagilimi ---",
+                  "const byModule = {};",
+                  "b.endpoints.forEach(function (e) { byModule[e.module] = (byModule[e.module] || 0) + 1; });",
+                  "console.log('--- ' + b.total + ' endpoint, modul dagilimi ---');",
+                  "Object.keys(byModule).sort().forEach(function (m) { console.log('  ' + m + ': ' + byModule[m]); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/endpoints",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "endpoints"
+              ]
+            },
+            "description": "Bütün endpoint'ler, modül ve ardından route'a göre **ordinal** sıralı.\n\nHepsi Minimal API lambda'sı olarak bildirilmiştir; `MethodDeclarationSyntax` hiçbirini görmez. Keşif `InvocationExpressionSyntax` + sembol doğrulaması ile yapılır — adı `MapDelete` olan ama framework'e ait olmayan bir metot listeye giremez.\n\n`/health/live` ve `/health/ready` **yok**: `MapHealthChecks` bir Map fiili değil (bilinen sınır L7)."
+          }
+        },
+        {
+          "name": "2.2 · Modüle göre filtre",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "const wanted = pm.collectionVariables.get('module');",
+                  "",
+                  "pm.test('200', function () { pm.response.to.have.status(200); });",
+                  "",
+                  "pm.test('Donen her endpoint istenen modulden', function () {",
+                  "    b.endpoints.forEach(function (e) {",
+                  "        pm.expect(e.module.toLowerCase(), e.id).to.eql(wanted.toLowerCase());",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Filtre buyuk/kucuk harf duyarsiz calisiyor', function () {",
+                  "    pm.expect(b.total, wanted + ' icin sonuc bekleniyordu').to.be.above(0);",
+                  "});",
+                  "",
+                  "console.log(wanted + ' modulunde ' + b.total + ' endpoint:');",
+                  "b.endpoints.forEach(function (e) { console.log('  ' + e.httpMethod + ' ' + e.route + '   ' + e.filePath + ':' + e.line); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/endpoints?module={{module}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "endpoints"
+              ],
+              "query": [
+                {
+                  "key": "module",
+                  "value": "{{module}}",
+                  "description": "Büyük/küçük harf duyarsız. Ordering, Cart, Catalog, Inventory, Payment, Notification, Discovery, Identity, Shipping."
+                }
+              ]
+            },
+            "description": "Tek modülün endpoint'leri. Modül adı assembly adının ikinci segmentinden gelir (`ModularCommerce.**Cart**.Api`), tahmin edilmez.\n\n`module` koleksiyon değişkenini değiştirerek diğer modülleri gez."
+          }
+        },
+        {
+          "name": "2.3 · Var olmayan modül — boş küme bir cevaptır",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('404 degil 200 — filtre eslesmedi, kaynak yok degil', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Bos liste, null degil', function () {",
+                  "    pm.expect(b.endpoints).to.be.an('array').that.is.empty;",
+                  "    pm.expect(b.total).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/endpoints?module=BoyleBirModulYok",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "endpoints"
+              ],
+              "query": [
+                {
+                  "key": "module",
+                  "value": "BoyleBirModulYok"
+                }
+              ]
+            },
+            "description": "**Bilerek bir kontrast.** Var olmayan bir modül filtresi 404 değil, boş listeyle **200** döner: kaynak (endpoint listesi) vardır, filtre eşleşmemiştir.\n\nKarşılaştır: klasör 6'daki `404 — node bulunamadı`. Orada istenen **şeyin kendisi** yoktur ve cevap öneri taşır. İki farklı durum, iki farklı kod."
+          }
+        }
+      ]
+    },
+    {
+      "name": "3 · /tables — Tablo kataloğu",
+      "description": "16 tablo, erişim **tüm graph üzerinden** hesaplanır — tek bir akış boyunca değil. Bir kataloğun cevapladığı soru budur: *\"bu tablo hiç yazılıyor mu?\"*\n\n`R`/`W` ayrımı kenarlardan türetilir, varsayılmaz. Migration gerekip gerekmediğine karar veren ayrım budur.",
+      "item": [
+        {
+          "name": "3.1 · Tablo kataloğu ve üç mercek",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('200 ve total tutarli', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(b.total).to.eql(b.tables.length);",
+                  "});",
+                  "",
+                  "pm.test('Her tablo adi sema nitelikli', function () {",
+                  "    // Zorunlu: bu repoda hem catalog.outbox_messages hem ordering.outbox_messages var.",
+                  "    // Semasiz bir ad ikisini tek node'a cokertirdi.",
+                  "    b.tables.forEach(function (t) {",
+                  "        pm.expect(t.table, t.table + ' sema nitelikli degil').to.include('.');",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test(\"access yalniz R, W ya da WR\", function () {",
+                  "    // Sira W-sonra-R. AnswerBuilder.cs:145 once yazmayi sonra okumayi ekliyor,",
+                  "    // yani uretilen tek birlesik deger 'WR' - 'RW' hic uretilmez.",
+                  "    // (TraceAnswer.cs:60'taki dokuman yorumu 'RW' diyor; yorum yanlis, kod dogru.)",
+                  "    b.tables.forEach(function (t) {",
+                  "        pm.expect(t.access, t.table).to.be.oneOf(['R', 'W', 'WR']);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Her tablo bir konfigurasyon dosyasina isaret ediyor', function () {",
+                  "    b.tables.forEach(function (t) {",
+                  "        pm.expect(t.line, t.table).to.be.above(0);",
+                  "        // Uretilmis kod asla atif hedefi olmamali: okuyucuyu duzenlememesi",
+                  "        // gereken bir dosyaya gondermek file:line vaadini bozar.",
+                  "        pm.expect(t.filePath, t.table + ' uretilmis koda atfedilmis').to.not.match(/Migrations\\/|\\.Designer\\.cs$|ModelSnapshot\\.cs$/);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Her kolonun konumu ve guven seviyesi var', function () {",
+                  "    b.tables.forEach(function (t) {",
+                  "        (t.columns || []).forEach(function (c) {",
+                  "            pm.expect(c.line, t.table + '.' + c.name).to.be.above(0);",
+                  "            pm.expect(c.confidence, t.table + '.' + c.name).to.be.oneOf(['Direct', 'RowLevel', 'Inferred', 'SecondClass']);",
+                  "            pm.expect(c.mechanisms, t.table + '.' + c.name).to.be.an('array').that.is.not.empty;",
+                  "        });",
+                  "    });",
+                  "});",
+                  "",
+                  "// --- Katalog ozeti ---",
+                  "console.log('--- ' + b.total + ' tablo ---');",
+                  "b.tables.forEach(function (t) {",
+                  "    console.log('  ' + t.access.padEnd(2) + '  ' + t.table.padEnd(34) + (t.columns || []).length + ' kolon   ' + t.filePath + ':' + t.line);",
+                  "});",
+                  "",
+                  "// ---------- mercekler ----------",
+                  "",
+                  "",
+                  "const writeOnly = b.tables.filter(function (t) { return t.access === 'W'; });",
+                  "const readOnly  = b.tables.filter(function (t) { return t.access === 'R'; });",
+                  "const noColumns = b.tables.filter(function (t) { return !(t.columns || []).length; });",
+                  "",
+                  "console.log('--- YALNIZ YAZILAN (' + writeOnly.length + ') ---');",
+                  "writeOnly.forEach(function (t) { console.log('  ' + t.table + '   -> okuyan bir akis graph\\'ta yok'); });",
+                  "",
+                  "console.log('--- YALNIZ OKUNAN (' + readOnly.length + ') ---');",
+                  "readOnly.forEach(function (t) { console.log('  ' + t.table); });",
+                  "",
+                  "console.log('--- KOLONSUZ (' + noColumns.length + ') ---');",
+                  "noColumns.forEach(function (t) { console.log('  ' + t.table + '  (' + t.access + ')'); });",
+                  "",
+                  "pm.test('Yalniz yazilan tablolar bir sinirin isareti olabilir', function () {",
+                  "    // Bu bir hata iddiasi DEGIL. Owned navigasyon okumasi READS kenari uretmiyor (L19),",
+                  "    // dolayisiyla gercekten okunan bir tablo 'yalniz yaziliyor' gorunebilir.",
+                  "    // Test hep gecer; amaci listeyi konsola dusurmek ve L19'u hatirlatmak.",
+                  "    pm.expect(writeOnly).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('Yazilan her tablonun en az bir kolonu var  (ya da sebebi bilinir)', function () {",
+                  "    const suspicious = b.tables.filter(function (t) {",
+                  "        return t.access.indexOf('W') >= 0 && !(t.columns || []).length;",
+                  "    }).map(function (t) { return t.table; });",
+                  "    if (suspicious.length) {",
+                  "        console.warn('Yaziliyor ama kolonu yok: ' + suspicious.join(', '));",
+                  "        console.warn('Beklenen sebepler: ham SQL (L6) ya da ic ice owned tip (L23).');",
+                  "    }",
+                  "    pm.expect(suspicious).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tables",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tables"
+              ]
+            },
+            "description": "Tablo kataloğu. `/tables` de parametre almaz — tek istek, sonrasında istemci tarafında üç mercek.\n\nHer tablo, onu **adlandıran** konfigürasyon satırına atfedilir (`builder.ToTable(\"carts\")`), migration snapshot'ına değil: `file:line`'ın tüm vaadi oraya gidip tarif edileni değiştirebilmektir.\n\nHer kolon bir `confidence` taşır:\n\n| Değer | Anlamı |\n|---|---|\n| `Direct` | Bir atama kolonu adıyla yazdı |\n| `RowLevel` | INSERT satırı bütün yazdı, kolon adı geçmedi |\n| `Inferred` | Modelden türetildi |\n| `SecondClass` | Entity inşası ya da parametreli SaveChanges — dolaylı |\n\n**Üç mercek** (konsola basılır) hata listesi değil, açık sınırların nerede görüneceğini söyler:\n\n- *Yalnız yazılan* bir tablo gerçekten okunuyor olabilir; owned navigasyon okuması READS kenarı üretmez (**L19**).\n- *Kolonsuz yazılan* bir tablo ham SQL ile yazılıyor (**L6**) ya da iç içe owned tip taşıyor olabilir (**L23**)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 · /trace — İleri yön: bu ne'ye dokunuyor",
+      "description": "**Impact analizi yönü.** Bir endpoint'ten (ya da herhangi bir node'dan) başlar, ulaşılabilir her şeyi çıkarır ve veri katmanını raporlar.\n\nForward cevabı `dataLayer` taşır, `entryPoints` **taşımaz** — ters yönün tabloları \"içeri giderken\" dokunulanlar olurdu ki kimsenin sorduğu bir soru değil. Alan hiç yok, böylece yanlış okuma imkânsız.\n\nParametreler: `maxDepth` (1-50, varsayılan 20) · `includeUtility` (varsayılan false).",
+      "item": [
+        {
+          "name": "4.1 · Checkout akışı — en derin zincir",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('200', function () { pm.response.to.have.status(200); });",
+                  "",
+                  "pm.test('Baslangic node\\'u bir endpoint ve bir kok', function () {",
+                  "    pm.expect(b.node.kind).to.eql('Endpoint');",
+                  "    pm.expect(b.node.rootKind).to.eql('Endpoint');",
+                  "    pm.expect(b.node.depth).to.eql(0);",
+                  "});",
+                  "",
+                  "pm.test('direction forward', function () { pm.expect(b.direction).to.eql('forward'); });",
+                  "",
+                  "pm.test('FORWARD cevabi dataLayer TASIR', function () {",
+                  "    pm.expect(b.dataLayer, 'forward cevabinda dataLayer bulunmali').to.be.an('object');",
+                  "    pm.expect(b.dataLayer.tables).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "",
+                  "pm.test('FORWARD cevabi entryPoints TASIMAZ  (tip seviyesinde garanti)', function () {",
+                  "    // Konvansiyon degil: alan null degil, HIC YOK. Yanlis okuma imkansiz kilinmis.",
+                  "    pm.expect(b.entryPoints, 'forward cevabinda entryPoints olmamali').to.be.undefined;",
+                  "});",
+                  "",
+                  "pm.test('Varsayilan derinlikte kesilme yok', function () {",
+                  "    pm.expect(b.maxDepth).to.eql(20);",
+                  "    pm.expect(b.truncated, 'olculen en uzun zincir 10; varsayilan 20 hicbir seyi kesmemeli').to.be.false;",
+                  "});",
+                  "",
+                  "pm.test('Ulasilan her node konumlanabilir', function () {",
+                  "    b.nodes.forEach(function (n) {",
+                  "        pm.expect(n.line, n.id).to.be.above(0);",
+                  "        pm.expect(n.filePath, n.id).to.not.eql('(no source)');",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Kolon sayisi tablolardaki kolonlarla uyusuyor', function () {",
+                  "    const counted = b.dataLayer.tables.reduce(function (a, t) { return a + (t.columns || []).length; }, 0);",
+                  "    pm.expect(b.dataLayer.columnCount).to.eql(counted);",
+                  "});",
+                  "",
+                  "pm.test('Gizlenen utility node sayisi raporlaniyor', function () {",
+                  "    // Inceltilmis ile hic olmayan ayni gorunmemeli.",
+                  "    pm.expect(b.filtered).to.have.property('utility');",
+                  "    pm.expect(b.filtered.utility).to.be.at.least(0);",
+                  "});",
+                  "",
+                  "pm.test('Modul sinirini asan event koprusu var', function () {",
+                  "    // Checkout OrderPaid yayinlar; Notification onu tuketir. Koprunun tablo duzeyindeki karsiligi",
+                  "    // notification.* tablolarinin bu cevapta gorunmesi.",
+                  "    pm.expect(b.eventBridges, 'eventBridges').to.be.an('array').that.is.not.empty;",
+                  "    b.eventBridges.forEach(function (e) {",
+                  "        pm.expect(e.eventId, 'event id tam nitelikli olmali').to.match(/^event:/);",
+                  "        pm.expect(e.publishedBy).to.be.an('array');",
+                  "        pm.expect(e.consumedBy).to.be.an('array');",
+                  "    });",
+                  "});",
+                  "",
+                  "// --- Sonraki istekler icin sakla ---",
+                  "pm.collectionVariables.set('baselineTraversed', String(b.traversed));",
+                  "if (b.dataLayer.tables.length) {",
+                  "    pm.collectionVariables.set('discoveredTable', 'table:' + b.dataLayer.tables[0].table);",
+                  "    const withCols = b.dataLayer.tables.find(function (t) { return (t.columns || []).length; });",
+                  "    if (withCols) {",
+                  "        pm.collectionVariables.set('discoveredColumn', 'column:' + withCols.table + '.' + withCols.columns[0].name);",
+                  "    }",
+                  "}",
+                  "",
+                  "// --- Rapor ---",
+                  "console.log('=== ' + b.node.displayName + ' ===');",
+                  "console.log(b.traversed + ' node gezildi, ' + b.dataLayer.tables.length + ' tablo, ' + b.dataLayer.columnCount + ' kolon');",
+                  "b.dataLayer.tables.forEach(function (t) {",
+                  "    console.log('  ' + t.access.padEnd(2) + ' ' + t.table);",
+                  "    (t.columns || []).forEach(function (c) {",
+                  "        console.log('       ' + c.name.padEnd(24) + c.confidence.padEnd(13) + c.mechanisms.join(',') + '   ' + c.location);",
+                  "    });",
+                  "});",
+                  "if (b.limitations.length) {",
+                  "    console.log('--- bu akisin sinirlari ---');",
+                  "    b.limitations.forEach(function (l) { console.log('  [' + l.code + '] ' + l.locations.length + ' site'); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node={{nodeCheckout}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeCheckout}}",
+                  "description": "Route ya da node id. Ham bırak — Postman kodlar."
+                }
+              ]
+            },
+            "description": "Hedefteki **en derin akış**: zincir 10 seviye, 12 tablo, 62 kolon.\n\nBurada üç mekanizma birlikte çalışıyor:\n\n1. **Event köprüsü** — `Order.MarkPaid` `OrderPaid` yayınlar, registry eşler, `OrderPaidNotificationConsumer` tüketir. `notification.*` tabloları cevaba **yalnız bu köprüden** girer.\n2. **SaveChanges interceptor** — `ordering.outbox_messages`'a hiçbir handler dokunmaz; satırı `DomainEventToOutboxInterceptor` SaveChanges sırasında yazar. Ona giden bir çağrı kenarı yoktur.\n3. **Satır düzeyi kural** — bir INSERT'in tüm kolonları sayılır, `IsRowVersion` ve identity kolonları hariç.\n\nKonsola tablo/kolon/mekanizma dökümü basılır."
+          }
+        },
+        {
+          "name": "4.2 · Cart delete — walkthrough'da anlatılan akış",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('200 ve Cart modulu', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(b.node.module).to.eql('Cart');",
+                  "});",
+                  "",
+                  "const carts = b.dataLayer.tables.find(function (t) { return t.table === 'cart.carts'; });",
+                  "",
+                  "pm.test('cart.carts hem okunuyor hem yaziliyor', function () {",
+                  "    pm.expect(carts, 'cart.carts bu akista bulunmali').to.exist;",
+                  "    pm.expect(carts.access).to.eql('WR');",
+                  "});",
+                  "",
+                  "pm.test('jsonb kapsayici kolon Items gorunuyor', function () {",
+                  "    // OwnsMany(...).ToJson() kolonu ne sahibin ne owned tipin GetProperties()'inde var.",
+                  "    // Sentetik olarak uretiliyor ve navigasyon adiyla adlandiriliyor.",
+                  "    const names = (carts.columns || []).map(function (c) { return c.name; });",
+                  "    pm.expect(names, 'Items kolonu').to.include('Items');",
+                  "});",
+                  "",
+                  "pm.test('Belirsiz implementasyon siniri ilan edilmis', function () {",
+                  "    // ICartRepository -> CachingCartRepository + PostgresCartRepository.",
+                  "    // Graph HANGISININ kostugunu kaydetmez; decorator zincirinde ikisi de kosar.",
+                  "    const codes = b.limitations.map(function (l) { return l.code; });",
+                  "    pm.expect(codes).to.include('ambiguous-implementation');",
+                  "});",
+                  "",
+                  "pm.test('Ikinci sinif kanit ilan edilmis', function () {",
+                  "    const codes = b.limitations.map(function (l) { return l.code; });",
+                  "    pm.expect(codes, 'new CartRecord(...) dolayli bir kanittir').to.include('second-class-evidence');",
+                  "});",
+                  "",
+                  "pm.test('Belirsiz node\\'lar isaretli', function () {",
+                  "    const amb = b.nodes.filter(function (n) { return n.ambiguous; });",
+                  "    pm.expect(amb, 'iki repository implementasyonu ambiguous olmali').to.not.be.empty;",
+                  "    console.log('ambiguous node\\'lar: ' + amb.map(function (n) { return n.displayName; }).join(', '));",
+                  "});",
+                  "",
+                  "console.log('=== ' + b.node.displayName + ' ===');",
+                  "console.log('Tanim: ' + b.node.location);",
+                  "b.dataLayer.tables.forEach(function (t) {",
+                  "    console.log('  ' + t.access + ' ' + t.table + '  ->  ' + (t.columns || []).map(function (c) { return c.name; }).join(', '));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node={{nodeCartDelete}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeCartDelete}}"
+                }
+              ]
+            },
+            "description": "`docs/walkthrough-cart-delete.md`'de Roslyn çağrısına kadar geri yürünen akış.\n\nBurada görülecekler:\n\n- **`cart.carts` erişimi `WR`** — okunuyor ve yazılıyor.\n- **`Items` kolonu** — `OwnsMany(...).ToJson()` kapsayıcısı. Hiçbir C# ifadesi bu kolonu adlandıramaz; sentetik olarak navigasyon adından üretilir.\n- **`ambiguous-implementation`** — `ICartRepository` iki implementasyona açılır ve graph hangisinin koştuğunu **kaydetmez**. Decorator zincirinde ikisi de koşar, yani burada doğru cevaptır.\n- **`second-class-evidence`** — `new CartRecord(...)` bir yazma iddiasıdır ama doğrudan okunmuş değildir.\n\nRoute'daki `{productId:guid}` süslü parantezleri Postman değişken sözdizimiyle karışmaz (o `{{...}}`)."
+          }
+        },
+        {
+          "name": "4.3 · Kontrast: kolonu olmayan bir okuma",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('Tabloya ulasiyor', function () {",
+                  "    pm.expect(b.dataLayer.tables, 'en az bir tablo').to.not.be.empty;",
+                  "});",
+                  "",
+                  "pm.test('Kolon sayisi SIFIR — ve bu DOGRU', function () {",
+                  "    // Bir okuma hicbir kolon yazmaz. Table -> Column kenari bir donem vardi ve",
+                  "    // bu endpoint alti kolon 'yazdigini' iddia ediyordu; kenar kaldirildi.",
+                  "    pm.expect(b.dataLayer.columnCount, 'okuma kolon yazmaz').to.eql(0);",
+                  "});",
+                  "",
+                  "pm.test('Erisim yalniz R', function () {",
+                  "    b.dataLayer.tables.forEach(function (t) {",
+                  "        pm.expect(t.access, t.table).to.eql('R');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node={{nodeCatalogList}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeCatalogList}}"
+                }
+              ]
+            },
+            "description": "**Doğru boş küme.** Bu endpoint bir tabloya ulaşır ama **sıfır** kolon raporlar, çünkü bir okumadır.\n\nBir dönem altı kolon \"yazdığını\" iddia ediyordu: `Table → Column` kenarı bir *eşleme* gibi okunup *erişilebilirlik* gibi davranıyordu, yani tabloyu okuyan her şey onu yazan herkesin dokunduğu kolonlara ulaşıyordu. Kenar kaldırıldı; yön artık yalnız `Column → Table`.\n\n**Bu istek bir kanaryadır.** Kolon sayısı sıfırdan farklı çıkarsa o hata geri gelmiş demektir."
+          }
+        },
+        {
+          "name": "4.4 · EF dışı akış — kayıp sessiz değil",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "const codes = b.limitations.map(function (l) { return l.code; });",
+                  "",
+                  "pm.test('Ham SQL siniri bu akista ADIYLA ilan ediliyor', function () {",
+                  "    // Kritik ayrim: graph \\'dokunmuyor\\' demiyor, \\'bakamadim\\' diyor.",
+                  "    pm.expect(codes, 'raw-sql limitation bekleniyordu').to.include('raw-sql');",
+                  "});",
+                  "",
+                  "pm.test('Sinir file:line ile konumlanmis', function () {",
+                  "    const raw = b.limitations.find(function (l) { return l.code === 'raw-sql'; });",
+                  "    pm.expect(raw.locations, 'her sinir denetlenebilir olmali').to.be.an('array').that.is.not.empty;",
+                  "    raw.locations.forEach(function (loc) { console.log('  ham SQL: ' + loc); });",
+                  "});",
+                  "",
+                  "console.log('Bu akis ' + b.dataLayer.tables.length + ' tablo raporluyor.');",
+                  "console.log('Gercek sayi daha yuksek olabilir - fark yukarida file:line ile duruyor.');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node={{nodeDiscoverySearch}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeDiscoverySearch}}"
+                }
+              ]
+            },
+            "description": "**Aracın kör olduğu yer, aracın kendisi tarafından ilan ediliyor.**\n\nDiscovery modülü pgvector kullanır ve EF10'da eşlenemediği için bilerek EF dışındadır. Tablo recall'ı bu modülde **%0**.\n\nAma kayıp sessiz değil: `limitations` altında `raw-sql` kodu ve her sitenin `file:line`'ı durur. Graph *\"dokunmuyor\"* demiyor, *\"bakamadım\"* diyor — ve bu iki cevap birbirinden ayırt edilebilir olmalıdır.\n\nBilinen sınır **L6**."
+          }
+        },
+        {
+          "name": "4.5 · Sığ derinlik → truncated",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('Uygulanan derinlik istenendir', function () {",
+                  "    // maxDepth = UYGULANAN sinir, istenen degil - ikisi ayrisabilseydi cevap yaniltirdi.",
+                  "    pm.expect(b.maxDepth).to.eql(2);",
+                  "});",
+                  "",
+                  "pm.test('truncated: true', function () {",
+                  "    pm.expect(b.truncated, 'derinlik 2 bu akisi kesmeli').to.be.true;",
+                  "});",
+                  "",
+                  "pm.test(\"'truncated' sinir kodu cevapta\", function () {",
+                  "    const codes = b.limitations.map(function (l) { return l.code; });",
+                  "    pm.expect(codes, 'kesilmis bir cevap kendini soylemeli').to.include('truncated');",
+                  "});",
+                  "",
+                  "pm.test('Kesilmis cevap tam cevaptan kucuk', function () {",
+                  "    const full = parseInt(pm.collectionVariables.get('baselineTraversed'), 10) || 0;",
+                  "    if (full) { pm.expect(b.traversed).to.be.below(full); }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node={{nodeCheckout}}&maxDepth=2",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeCheckout}}"
+                },
+                {
+                  "key": "maxDepth",
+                  "value": "2",
+                  "description": "1-50. Varsayılan 20."
+                }
+              ]
+            },
+            "description": "Derinliği kısarsan cevap **kendini eksik ilan eder**: `truncated: true` ve `limitations` içinde `truncated` kodu.\n\n`maxDepth` alanı **uygulanan** sınırı taşır, istenen değil. İkisi ayrışabilseydi cevap yanıltırdı.\n\nBu, sessiz kayba karşı yazılmış bir mekanizma: eksik bir cevap ile tam bir cevap aynı görünmemelidir."
+          }
+        },
+        {
+          "name": "4.6 · Utility node'ları dahil et",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "const base = parseInt(pm.collectionVariables.get('baselineTraversed'), 10) || 0;",
+                  "",
+                  "pm.test('Utility dahil edilince gezilen node sayisi artar (ya da esit kalir)', function () {",
+                  "    if (base) { pm.expect(b.traversed).to.be.at.least(base); }",
+                  "});",
+                  "",
+                  "pm.test('Utility dahilken gizlenen sayaci sifir', function () {",
+                  "    pm.expect(b.filtered.utility).to.eql(0);",
+                  "});",
+                  "",
+                  "pm.test('Utility node\\'lari gercekten geldi', function () {",
+                  "    const util = b.nodes.filter(function (n) { return n.utility; });",
+                  "    console.log('utility node: ' + util.length + ' — ' + util.map(function (n) { return n.displayName; }).join(', '));",
+                  "    pm.expect(util).to.be.an('array');",
+                  "});",
+                  "",
+                  "pm.test('Hicbir KOK utility etiketli degil', function () {",
+                  "    // Invariant: bir kok, tanimi geregi yardimci olamaz. Shared'daki seeder bir",
+                  "    // BackgroundService kokudur ve utility etiketlenirse inceltme onu dusururdu.",
+                  "    const bad = b.nodes.filter(function (n) { return n.utility && n.rootKind && n.rootKind !== 'None'; });",
+                  "    pm.expect(bad.map(function (n) { return n.id; }), 'kok + utility celiskisi').to.be.empty;",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node={{nodeCheckout}}&includeUtility=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeCheckout}}"
+                },
+                {
+                  "key": "includeUtility",
+                  "value": "true",
+                  "description": "Varsayılan false."
+                }
+              ]
+            },
+            "description": "`Shared` modülündeki yardımcı node'lar (`Result.Success`, `Error` üreticileri…) varsayılan olarak gizlidir. Graph'tan **silinmezler** — etiketlenirler, ve tüketici bu kolu çevirebilir.\n\nÖlçüldü: 25 endpoint ve 16 tablonun tamamında gizlemenin bedeli **sıfır tablo, sıfır kolon, sıfır giriş noktası**.\n\nHer cevap kaç tane gizlediğini `filtered.utility` ile söyler — *inceltilmiş* ile *hiç yok* aynı görünmemelidir.\n\nSon test bir invariant koruyor: **bir kök utility olamaz.** Bu kural yazılmadan önce `Shared`'daki seeder bir `BackgroundService` kökü olmasına rağmen utility etiketleniyordu ve inceltme onu düşürüyordu — dört backward cevabı \"bu tabloyu kim yazıyor\" kanıtını kaybetmişti."
+          }
+        },
+        {
+          "name": "4.7 · Node id ile çağırma (route yerine)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('endpoint: onekli id de cozuluyor', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(b.node.id).to.eql('endpoint:' + pm.collectionVariables.get('nodeCheckout'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node=endpoint:{{nodeCheckout}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "endpoint:{{nodeCheckout}}"
+                }
+              ]
+            },
+            "description": "`node` parametresi ham route'u da tam node id'sini de kabul eder. `NodeResolver` ikisini de çözer.\n\nMetot node'ları için tam imza gerekir — parametreler kimliğin parçasıdır. `ProductChangedConsumer` yalnız `ConsumeContext<T>` argümanıyla ayrılan iki `Consume` overload'u taşır; parametresiz bir id onları tek node'a çökertirdi."
+          }
+        }
+      ]
+    },
+    {
+      "name": "5 · /backward — Geri yön: buna kim dokunuyor",
+      "description": "**Incident ve impact yönü.** Bir tablodan ya da kolondan başlar, ona ulaşan **kökleri** bulur ve `RootKind`'a göre gruplar.\n\nBackward cevabı `entryPoints` taşır, `dataLayer` **taşımaz** — ters yönün tabloları \"içeri giderken\" dokunulanlar olurdu.\n\nKök kümesi sabittir: **Endpoint + Consumer + BackgroundService.** Arka plan işi birinci sınıf bir giriş noktasıdır; outbox dispatcher'ları ve rezervasyon süpürücüsü hiçbir endpoint'in yapmadığı yazmalara sahiptir.",
+      "item": [
+        {
+          "name": "5.1 · Bu tabloya kim dokunuyor — karışık kökler",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('200 ve baslangic bir tablo', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(b.node.kind).to.eql('Table');",
+                  "});",
+                  "",
+                  "pm.test('direction backward', function () { pm.expect(b.direction).to.eql('backward'); });",
+                  "",
+                  "pm.test('BACKWARD cevabi entryPoints TASIR', function () {",
+                  "    pm.expect(b.entryPoints, 'backward cevabinda entryPoints bulunmali').to.be.an('object');",
+                  "    pm.expect(b.entryPoints.groups).to.be.an('array').that.is.not.empty;",
+                  "});",
+                  "",
+                  "pm.test('BACKWARD cevabi dataLayer TASIMAZ  (tip seviyesinde garanti)', function () {",
+                  "    // CLI bir donem ayni blogu iki yon altinda iki farkli anlamla basiyordu.",
+                  "    // Alanin hic olmamasi yanlis okumayi imkansiz kiliyor.",
+                  "    pm.expect(b.dataLayer, 'backward cevabinda dataLayer olmamali').to.be.undefined;",
+                  "});",
+                  "",
+                  "pm.test('total gruplarin toplamina esit', function () {",
+                  "    const sum = b.entryPoints.groups.reduce(function (a, g) { return a + g.count; }, 0);",
+                  "    pm.expect(b.entryPoints.total).to.eql(sum);",
+                  "});",
+                  "",
+                  "pm.test('Her grup gercek bir kok tipi  (None yok)', function () {",
+                  "    b.entryPoints.groups.forEach(function (g) {",
+                  "        pm.expect(g.rootKind, 'grup rootKind').to.be.oneOf(['Endpoint', 'Consumer', 'BackgroundService']);",
+                  "        pm.expect(g.count).to.eql(g.nodes.length);",
+                  "    });",
+                  "});",
+                  "",
+                  "pm.test('Her kok konumlanabilir', function () {",
+                  "    b.entryPoints.groups.forEach(function (g) {",
+                  "        g.nodes.forEach(function (n) {",
+                  "            pm.expect(n.line, n.id).to.be.above(0);",
+                  "        });",
+                  "    });",
+                  "});",
+                  "",
+                  "console.log('=== ' + b.node.displayName + ' <- ' + b.entryPoints.total + ' giris noktasi ===');",
+                  "b.entryPoints.groups.forEach(function (g) {",
+                  "    console.log('  ' + g.rootKind + ' (' + g.count + '):');",
+                  "    g.nodes.forEach(function (n) { console.log('      ' + n.displayName + '   ' + n.location); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/backward?node={{nodeOrdersTable}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "backward"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeOrdersTable}}"
+                }
+              ]
+            },
+            "description": "*\"Bu tabloyu değiştirirsem ne kırılır?\"*\n\n`ordering.orders` **karışık** kök taşır: dört Ordering endpoint'i (checkout, liste, detay, cancel) **ve** bir arka plan işi (`ReservationTtlSweeper`).\n\nArka plan işinin ayrı bir `RootKind` ile görünmesi önemli: doğru cevap her zaman buydu, eksik olan **sunumdu**. Bir incident'ta \"bu tabloyu kim yazdı\" sorusunun cevabı bir endpoint olmayabilir."
+          }
+        },
+        {
+          "name": "5.2 · Saf tablo — yalnız endpoint kökleri",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "const kinds = b.entryPoints.groups.map(function (g) { return g.rootKind; });",
+                  "",
+                  "pm.test('Yalniz Endpoint kokleri', function () {",
+                  "    pm.expect(kinds).to.eql(['Endpoint']);",
+                  "});",
+                  "",
+                  "pm.test('Kokler modul sinirini asiyor — ve bu DOGRU', function () {",
+                  "    // 'Saf' burada KOK TIPI icin gecerli (yalniz Endpoint), modul icin degil.",
+                  "    // Olculen: 4 Cart endpoint'i + POST /api/ordering/checkout. Checkout sepeti",
+                  "    // ICartService uzerinden okur, dolayisiyla cart.carts'a mesru olarak ulasir.",
+                  "    // Bu satir bir sizinti testi DEGIL; modullerarasi baginti kaydedilsin diye var.",
+                  "    const modules = new Set();",
+                  "    b.entryPoints.groups.forEach(function (g) { g.nodes.forEach(function (n) { modules.add(n.module); }); });",
+                  "    const list = Array.from(modules).sort();",
+                  "    console.log('Kok modulleri: ' + list.join(', '));",
+                  "    pm.expect(list, 'tablonun sahibi Cart mutlaka olmali').to.include('Cart');",
+                  "    if (list.length > 1) {",
+                  "        console.log('DIKKAT: bu tabloyu ' + (list.length - 1) + ' baska modul de okuyor.');",
+                  "        console.log('Sepet saklama bicimini degistirirsen o akislar da etkilenir.');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/backward?node={{nodeCartsTable}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "backward"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeCartsTable}}"
+                }
+              ]
+            },
+            "description": "**Karşıt vaka — ama dikkat, \"saf\" burada kök TİPİ için geçerli.**\n\n`cart.carts`'a yalnız `Endpoint` kökleri ulaşır: consumer yok, arka plan işi yok. `ordering.orders` ile farkı budur.\n\n**Modül olarak saf değil.** Ölçüldü: 5 kökten 4'ü Cart, biri `POST /api/ordering/checkout` — checkout sepeti `ICartService` üzerinden okur ve `cart.carts`'a meşru olarak ulaşır.\n\nBu, backward sorgusunun asıl faydasıdır: *\"sepetin saklanma biçimini değiştirirsem yalnız Cart modülü mü etkilenir?\"* sorusunun cevabı **hayır**, ve bunu kaynağa bakmadan bilmenin yolu yok."
+          }
+        },
+        {
+          "name": "5.3 · Bu kolonu kim YAZIYOR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('Baslangic bir kolon node\\'u', function () {",
+                  "    pm.expect(b.node.kind).to.eql('Column');",
+                  "});",
+                  "",
+                  "pm.test('Kolona ulasan kokler var', function () {",
+                  "    pm.expect(b.entryPoints.total, 'bu kolonu yazan bir akis olmali').to.be.above(0);",
+                  "});",
+                  "",
+                  "pm.test('DIKKAT: bu soru YAZMA sorusudur, okuma degil', function () {",
+                  "    // Kolon node'lari yalniz bir YAZMA onlari adlandirdiginda uretilir.",
+                  "    // \"Bu kolonu kim okuyor?\" sorusunun graph'ta karsiligi yok - L18-2.",
+                  "    // Test hep gecer; amaci cevabin ne OLMADIGINI kayda gecirmek.",
+                  "    pm.expect(b.direction).to.eql('backward');",
+                  "});",
+                  "",
+                  "console.log('=== ' + b.node.displayName + ' <- ' + b.entryPoints.total + ' yazan giris noktasi ===');",
+                  "b.entryPoints.groups.forEach(function (g) {",
+                  "    g.nodes.forEach(function (n) { console.log('  [' + g.rootKind + '] ' + n.displayName); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/backward?node={{nodeStatusColumn}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "backward"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeStatusColumn}}"
+                }
+              ]
+            },
+            "description": "Kolon düzeyi impact analizi: *\"bu kolonun anlamını değiştirirsem hangi akışlar etkilenir?\"*\n\n**Kritik uyarı:** bu bir **yazma** sorusudur. Kolon node'ları yalnız bir yazma onları adlandırdığında üretilir; *\"bu kolonu kim okuyor?\"* sorusunun graph'ta karşılığı **yoktur** ve boş liste bir cevap değildir.\n\nBilinen sınır **L18-2**, `/graph/stats` altında `column-reads-not-modelled` koduyla ilan edilir."
+          }
+        },
+        {
+          "name": "5.4 · jsonb kolonu geriye",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('Sentetik jsonb kolonu geri yonde de cozuluyor', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "    pm.expect(b.node.kind).to.eql('Column');",
+                  "    pm.expect(b.entryPoints.total).to.be.above(0);",
+                  "});",
+                  "",
+                  "console.log('cart.carts.Items yazan akislar:');",
+                  "b.entryPoints.groups.forEach(function (g) {",
+                  "    g.nodes.forEach(function (n) { console.log('  [' + g.rootKind + '] ' + n.displayName); });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/backward?node={{nodeItemsColumn}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "backward"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeItemsColumn}}"
+                }
+              ]
+            },
+            "description": "`cart.carts.Items` bir `OwnsMany(...).ToJson()` kapsayıcı kolonudur — ne sahibin ne owned tipin `GetProperties()`'inde bulunur, sentetik olarak üretilir.\n\nBuna rağmen sıradan bir kolon gibi davranır: geri yönde sorgulanabilir, konumu `CartRecord.cs:5`'tir ve onu yazan akışlar listelenir.\n\n*\"Sepet saklama biçimini değiştireceğim, ne kırılır?\"* sorusunun cevabı budur."
+          }
+        }
+      ]
+    },
+    {
+      "name": "6 · Hata yolları — sessiz başarısızlık yok",
+      "description": "Bu klasördeki isteklerin **hepsi bilerek başarısız** olur. Her biri bir tasarım kararını sınar: kırpma yerine hata, boş liste yerine öneri, sebepsiz 503 yerine tam komut.\n\nHepsi `application/problem+json` döner.",
+      "item": [
+        {
+          "name": "6.1 · 400 — node parametresi eksik",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('400', function () { pm.response.to.have.status(400); });",
+                  "",
+                  "pm.test('Mesaj kullanilabilir bir ornek tasiyor', function () {",
+                  "    pm.expect(b.detail, 'hata mesaji nasil duzeltilecegini soylemeli').to.include('node=');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ]
+            },
+            "description": "`node` zorunludur. Cevap yalnız \"eksik\" demez, **kopyalanabilir iki örnek** verir."
+          }
+        },
+        {
+          "name": "6.2 · 400 — maxDepth aralık dışı (sessiz kırpma yok)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('400 — sessizce 50\\'ye kirpilmadi', function () {",
+                  "    // 200 isteyip 50 alan ve bunu ogrenmeyen bir cagiran, her seyi gordugune inanirdi.",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "",
+                  "pm.test('Istenen, sinir, varsayilan ve OLCULEN en uzun zincir birlikte donuyor', function () {",
+                  "    pm.expect(b.requested).to.eql(51);",
+                  "    pm.expect(b.max).to.eql(50);",
+                  "    pm.expect(b.default).to.eql(20);",
+                  "    pm.expect(b.longestMeasuredChain, 'olculen deger - tahmin degil').to.eql(10);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node={{nodeCheckout}}&maxDepth=51",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{nodeCheckout}}"
+                },
+                {
+                  "key": "maxDepth",
+                  "value": "51"
+                }
+              ]
+            },
+            "description": "**Aralık dışı bir derinlik 400'dür, asla sessiz bir kırpma değil.**\n\n200 isteyip 50 alan ve bunu öğrenmeyen bir çağıran, her şeyi gördüğüne inanırdı.\n\nGövde dört sayı taşır: istenen, izin verilen üst sınır, varsayılan ve **bu hedefte ölçülen en uzun zincir (10)**. Sonuncusu bir tahmin değil, ölçüm — ve çağırana derinliği artırmanın gereksiz olduğunu söyler."
+          }
+        },
+        {
+          "name": "6.3 · 404 — boş liste değil, öneri",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('404', function () { pm.response.to.have.status(404); });",
+                  "",
+                  "pm.test('Istenen deger aynen geri donuyor', function () {",
+                  "    pm.expect(b.requested).to.be.a('string').and.not.empty;",
+                  "});",
+                  "",
+                  "pm.test('didYouMean dolu — yakin eslesmeler oneriliyor', function () {",
+                  "    // Bos bir liste \\'boyle bir sey yok\\' ile \\'yanlis yazdin\\' arasindaki farki gizler.",
+                  "    pm.expect(b.didYouMean, 'oneri listesi').to.be.an('array').that.is.not.empty;",
+                  "    console.log('Bunu mu demek istediniz: ' + b.didYouMean.join(' | '));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node=DELETE /api/cart/item",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "DELETE /api/cart/item"
+                }
+              ]
+            },
+            "description": "Yanlış yazılmış bir route boş küme değil, **öneri** döndürür.\n\nÖlçülen cevap:\n\n```json\n{\n  \"status\": 404,\n  \"detail\": \"\\\"DELETE /api/cart/item\\\" hicbir node ile eslesmiyor.\",\n  \"requested\": \"DELETE /api/cart/item\",\n  \"didYouMean\": [\"endpoint:DELETE /api/cart/items/{productId:guid}\"]\n}\n```\n\nBoş bir liste *\"böyle bir şey yok\"* ile *\"yanlış yazdın\"* arasındaki farkı gizlerdi. Karşılaştır: klasör 2.3, orada boş liste **doğru** cevaptır."
+          }
+        },
+        {
+          "name": "6.4 · 404 — hiç benzemeyen",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('404', function () { pm.response.to.have.status(404); });",
+                  "",
+                  "pm.test('didYouMean her zaman bir dizi  (bos olabilir)', function () {",
+                  "    pm.expect(b.didYouMean, 'alan hep var, icerigi bos olabilir').to.be.an('array');",
+                  "});",
+                  "",
+                  "console.log('oneri sayisi: ' + b.didYouMean.length);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node=zzzz-boyle-bir-sey-yok-9999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "zzzz-boyle-bir-sey-yok-9999"
+                }
+              ]
+            },
+            "description": "Hiçbir şeye benzemeyen bir girdi. `didYouMean` **alanı yine vardır** ama boş olabilir — şema tutarlı kalır, çağıran alanın varlığını koşula bağlamak zorunda kalmaz."
+          }
+        },
+        {
+          "name": "6.5 · 503 — graph yok (dokümante; tetiklemek için API'yi graph'sız başlat)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const b = pm.response.json();",
+                  "",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test.skip('Graph mevcut — 503 yolu bu kosuda tetiklenemez.');",
+                  "    console.log('Bu yolu gormek icin API\\'yi olmayan bir graph ile baslat:');",
+                  "    console.log('  dotnet run --project src/FlowLens.Api -c Release -- --FlowLens:GraphPath=C:/yok/graph.json');",
+                  "    return;",
+                  "}",
+                  "",
+                  "pm.test('503', function () { pm.response.to.have.status(503); });",
+                  "",
+                  "pm.test('Govde denenen TUM yollari ve tam komutu tasiyor', function () {",
+                  "    pm.expect(b.attemptedPaths, 'tek bir yol degil hepsi').to.be.an('array').that.is.not.empty;",
+                  "    pm.expect(b.fix).to.include('flowlens build');",
+                  "    pm.expect(b.orSetGraphPath).to.include('GraphPath');",
+                  "});",
+                  "",
+                  "pm.test('API\\'nin solution yuklemedigi acikca yaziyor', function () {",
+                  "    pm.expect(b.detail).to.include('solution');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/tables",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "tables"
+              ]
+            },
+            "description": "Graph okunamadığında veri uçları **503** döner ve gövde `EfPreflight`'ın mesaj şeklini izler: ne yanlış, hangi değerler, ve **tam düzeltme komutu**.\n\n`attemptedPaths` tek bir yanlış yolu değil **hepsini** listeler — asıl soru \"nereye baktık\" değil \"neden oraya baktık\"tır; çalışma dizini beklenenden farklıysa bunu ancak tam liste gösterir.\n\nTetiklemek için:\n\n```bash\ndotnet run --project src/FlowLens.Api -c Release -- --FlowLens:GraphPath=C:/yok/graph.json\n```\n\nGraph mevcutken bu istek 200 döner ve test kendini atlar.\n\nVasıta olarak `/tables` seçildi; 503 sözleşmesi dört veri ucunun hepsinde aynıdır."
+          }
+        }
+      ]
+    },
+    {
+      "name": "7 · Senaryolar — zincirli akışlar",
+      "description": "**Collection Runner ile koş.** Bu klasördeki istekler `postman.setNextRequest` ile birbirine bağlıdır ve tek tek çalıştırıldığında zincir kurulmaz.\n\nSenaryo: *\"Bir endpoint seç → neye dokunduğunu gör → dokunduğu tabloya başka kimin dokunduğunu bul.\"* Bu, gerçek bir impact analizinin üç adımıdır.\n\n**Runner'da yalnız bu klasörü seç** ve çalıştır. Sonuç raporu konsola basılır.",
+      "item": [
+        {
+          "name": "7.1 · Adım 1 — bir endpoint seç",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "// En cok tabloya dokunan endpoint'i degil, en cok ilgi ceken modulu sec:",
+                  "// yazma yapan bir POST/PUT/DELETE, cunku impact sorusu yazmalarla ilgilidir.",
+                  "const writers = b.endpoints.filter(function (e) {",
+                  "    return ['POST', 'PUT', 'DELETE'].indexOf(e.httpMethod) >= 0;",
+                  "});",
+                  "",
+                  "pm.test('Yazma yapan en az bir endpoint var', function () {",
+                  "    pm.expect(writers).to.not.be.empty;",
+                  "});",
+                  "",
+                  "const picked = writers[0];",
+                  "pm.collectionVariables.set('discoveredEndpoint', picked.httpMethod + ' ' + picked.route);",
+                  "",
+                  "console.log('');",
+                  "console.log('##############################################');",
+                  "console.log('# SENARYO: impact analizi');",
+                  "console.log('# Adim 1 - secilen endpoint:');",
+                  "console.log('#   ' + picked.httpMethod + ' ' + picked.route);",
+                  "console.log('#   ' + picked.filePath + ':' + picked.line);",
+                  "console.log('##############################################');",
+                  "",
+                  "postman.setNextRequest('7.2 · Adım 2 — neye dokunuyor');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/endpoints",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "endpoints"
+              ]
+            },
+            "description": "Yazma yapan (POST/PUT/DELETE) ilk endpoint'i seçer ve `discoveredEndpoint`'e yazar.\n\nImpact sorusu yazmalarla ilgilidir — bir GET'in migration'a etkisi yoktur.\n\n---\n\n**Neden `/endpoints`'i 2.1 ile birlikte iki kez çağırıyoruz?** Postman'de bir senaryo zinciri başka bir klasördeki isteği çağıramaz; `setNextRequest` yalnız istek adına atlar. Bu klasörün Runner'da **tek başına** seçilip koşabilmesi için kendi başlangıç isteğine ihtiyacı var. Koleksiyondaki bilerek bırakılmış tek tekrar budur."
+          }
+        },
+        {
+          "name": "7.2 · Adım 2 — neye dokunuyor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "",
+                  "pm.test('Akis cozuldu', function () { pm.response.to.have.status(200); });",
+                  "",
+                  "const written = (b.dataLayer.tables || []).filter(function (t) { return t.access.indexOf('W') >= 0; });",
+                  "",
+                  "console.log('# Adim 2 - ' + b.node.displayName + ' dokunduklari:');",
+                  "b.dataLayer.tables.forEach(function (t) {",
+                  "    console.log('#   ' + t.access.padEnd(2) + ' ' + t.table + '  (' + (t.columns || []).length + ' kolon)');",
+                  "});",
+                  "if (b.limitations.length) {",
+                  "    console.log('#   sinirlar: ' + b.limitations.map(function (l) { return l.code; }).join(', '));",
+                  "}",
+                  "",
+                  "if (written.length) {",
+                  "    pm.collectionVariables.set('discoveredTable', 'table:' + written[0].table);",
+                  "    console.log('# Adim 3 icin secilen tablo: ' + written[0].table);",
+                  "    postman.setNextRequest('7.3 · Adım 3 — o tabloya başka kim dokunuyor');",
+                  "} else {",
+                  "    console.log('# Bu akis hicbir tablo YAZMIYOR - zincir burada bitiyor.');",
+                  "    console.log('# (Bu dogru bir cevap olabilir: bir okuma hicbir kolon yazmaz.)');",
+                  "    postman.setNextRequest(null);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/trace?node={{discoveredEndpoint}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "trace"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{discoveredEndpoint}}"
+                }
+              ]
+            },
+            "description": "Seçilen endpoint'in veri katmanı. **Yazılan** ilk tabloyu `discoveredTable`'a yazar ve adım 3'e geçer.\n\nHiçbir tablo yazılmıyorsa zincir orada durur — ve bu doğru bir cevap olabilir."
+          }
+        },
+        {
+          "name": "7.3 · Adım 3 — o tabloya başka kim dokunuyor",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.collectionVariables.get('graphAvailable') === 'unavailable') { pm.test.skip('graph yok'); return; }",
+                  "const b = pm.response.json();",
+                  "const origin = pm.collectionVariables.get('discoveredEndpoint');",
+                  "",
+                  "pm.test('Geri yon cozuldu', function () { pm.response.to.have.status(200); });",
+                  "",
+                  "pm.test('Baslangic endpoint\\'i kendi tablosunun kokleri arasinda', function () {",
+                  "    // Tutarlilik kapisi: ileri yon A -> T diyorsa, geri yon T -> A demeli.",
+                  "    // Ayrismalari eval set'in Q01/Q19 celiskisinde bulunan hata sinifidir.",
+                  "    const all = [];",
+                  "    b.entryPoints.groups.forEach(function (g) { g.nodes.forEach(function (n) { all.push(n.displayName); }); });",
+                  "    pm.expect(all, origin + ' geri yonde de gorunmeli').to.include(origin);",
+                  "});",
+                  "",
+                  "const others = [];",
+                  "b.entryPoints.groups.forEach(function (g) {",
+                  "    g.nodes.forEach(function (n) { if (n.displayName !== origin) { others.push('[' + g.rootKind + '] ' + n.displayName); } });",
+                  "});",
+                  "",
+                  "console.log('# Adim 3 - ' + b.node.displayName + ' tablosuna dokunan ' + b.entryPoints.total + ' giris noktasi');",
+                  "console.log('#   Baslangic: ' + origin);",
+                  "if (others.length) {",
+                  "    console.log('#   ETKILENEBILECEK DIGERLERI:');",
+                  "    others.forEach(function (o) { console.log('#     ' + o); });",
+                  "} else {",
+                  "    console.log('#   Baska dokunan yok - bu tablo tek bir akisa ait.');",
+                  "}",
+                  "console.log('##############################################');",
+                  "console.log('');",
+                  "",
+                  "postman.setNextRequest(null);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/backward?node={{discoveredTable}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "backward"
+              ],
+              "query": [
+                {
+                  "key": "node",
+                  "value": "{{discoveredTable}}"
+                }
+              ]
+            },
+            "description": "Zincirin kapanışı: seçilen endpoint'in yazdığı tabloya **başka kim** dokunuyor.\n\nBu, bir impact analizinin asıl cevabıdır — *\"benim değişikliğim kimi etkiler\"*.\n\nİçindeki test bir **tutarlılık kapısıdır**: ileri yön `A → T` diyorsa geri yön `T → A` demelidir. İkisinin ayrışması, eval set'in kendi içinde bulduğu hata sınıfının aynısıdır (Q01/Q19 çelişkisi)."
+          }
+        }
+      ]
+    }
+  ]
+}
