@@ -28,25 +28,78 @@ Change impact analysis akademik bir terim: bir değişikliğin sistemde nereye y
 
 Ortak zemin şu: üçü de **aynı soruyu** farklı yönlerden soruyor. Onboarding ileri yönde sorar (bu endpoint nereye gidiyor), change impact analysis geri yönde sorar (bu tabloya kim dokunuyor), incident triage bir noktadan başlayıp iki yöne birden sorar. Elinizde yön değiştirebilen tek bir harita varsa üçü de aynı veriden cevaplanıyor.
 
-Ben o haritayı bir .NET modular monolith üzerinde çıkardım: 66 proje, 25 endpoint, 8 ayrı veritabanı context'i.
+Ben o haritayı bir .NET modular monolith üzerinde çıkardım: 66 projelik bir solution, 48'i ürün kodu ve 18'i test. İçinde 25 endpoint ve 8 ayrı veritabanı context'i var.
 
-## 🗺️ Çözümün şekli: neden tek bir dosya
+## 🗺️ Çözümün şekli: adım adım ne inşa edildi
 
-Aracın ürettiği şey bir servis değil, bir **dosya**: `graph.json`. İçinde 415 node ve 966 kenar var, diskte 987 KB.
+Harita tek hamlede çıkmıyor. Dört katman var, her biri farklı bir soru soruyor, ve sonuncusu hepsini tek dosyada birleştiriyor. Zeminde tek bir olgu duruyor: C# derleyicisinin kendisi bir kütüphane, yani kodu çalıştırmadan okuyup anlamlandırabiliyorsunuz.
 
-Node dediğim şey bir endpoint, bir metot, bir tablo, bir kolon ya da bir event. Kenar ise aralarındaki ilişki: çağırıyor, okuyor, yazıyor, eşleniyor, yayınlıyor, tüketiyor.
+**1. Giriş noktaları: istek nereden giriyor?**
 
-[GÖRSEL: mimari şema, kaynak koddan graph.json'a ve oradan dört tüketiciye]
+İlk iş her HTTP giriş noktasını bulmak. Bu projede 25 tane var. Klasik bir Controller projesinde bunlar sınıf içindeki metotlar olurdu ve bulmak kolay olurdu. Burada hepsi Minimal API lambda'sı, yani bir metot bildirimi bile değiller: metot bildirimlerini tarayan klasik yaklaşım 25 endpoint'in **sıfırını** görüyor. Aranması gereken şey metot değil, `MapPost` gibi bir çağrının kendisi ve ona verilen lambda.
 
-Bu dosyayı üretmek 66 projeyi derlemeyi gerektiriyor ve **25-32 saniye** sürüyor. Bir HTTP isteğinin arkasında bu iş asla çalışmaz. Zaten çalışmasına gerek de yok: kod her dakika değişmiyor.
+**2. Çağrı zinciri: o istek nereye gidiyor?**
 
-Ayrım şu: pahalı hesap günde bir kez ya da CI'da bir kez yapılır, ucuz sorgu binlerce kez koşar. Ölçülen sorgu süresi **0,4-1,9 ms**. Aradaki fark on binde bir mertebesinde ve tamamen bu ayrımdan geliyor.
+Endpoint bulunduktan sonra gövdesindeki her çağrı takip ediliyor, sonra o çağrının gövdesindeki her çağrı, özyinelemeli olarak. Zincirin tepesinde endpoint, altında handler, onun altında çağırdığı metotlar ve repository'ler.
 
-Ama asıl kazanç performans değil. `graph.json` bir metin dosyası olduğu için repoya commit'lenebiliyor, `git diff` ile karşılaştırılabiliyor ve elle okunabiliyor. Bu üçüncü özellik projenin en somut faydasını üretti: testler yeşilken graph'ın üç yerde sessizce yanlış cevap verdiğini fark eden şey, dosyayı satır satır okumaktı.
+Zincir bir yerde çatallanıyor: çağrı bir arayüze yapılmışsa hangi implementasyonun koşacağı kaynakta yazmıyor. Verilen karar hepsini eklemek ve düğümü `ambiguous` işaretlemek. Var olan bir yolu kaçırmak, fazladan bir yol taşımaktan tehlikeli.
 
-Aynı dosyanın üstünde dört tüketici duruyor: bir HTTP API, bir dokümantasyon üreteci, bir incident triage komutu ve bir ölçüm seti. Dördü de aynı veriden besleniyor, dolayısıyla dördü birden aynı anda yanılabilir ama biri diğerinden farklı bir cevap veremez.
+**3. Veri katmanı: hangi tabloya, hangi kolona?**
 
-Dosyanın tazeliği elle takip edilmiyor. API her istekte dosyanın değişip değişmediğine bakıyor ve değiştiyse yeniden yüklüyor, yani graph'ı yeniden üretmek servisi yeniden başlatmayı gerektirmiyor. Bozuk bir dosya ise son çalışan hâli düşürmüyor. Graph hiç yoksa veri uçları açık bir hata döndürüyor ve o hatanın gövdesinde hangi yollara bakıldığı ile dosyayı üretecek komut yazıyor. Sessiz boş liste yok.
+Buraya kadar her şey koddu. Tablo ve kolon adları kodda yazmıyor, veritabanı eşleme katmanının kendi modelinde duruyor. Üçüncü adım o modeli okuyup entity'yi tabloya, property'yi kolona bağlamak. İsim tahmini yok, SQL cümlesi ayrıştırma yok: 16 tablo, 97 kolon.
+
+**4. Modül köprüleri: zincir nerede kopuyor?**
+
+Modüller birbirini doğrudan çağırmıyor, event yayınlıyor. Senkron zincir orada bitiyor ve harita yarım kalıyor. Dördüncü adım o boşluğu kapatmak: hangi event nerede doğuyor, hangi consumer dinliyor.
+
+**Ve hepsi tek dosyada.**
+
+Dört adımın çıktısı tek bir yerde birleşiyor: `graph.json`. 415 node, 966 kenar, diskte 987 KB. Node dediğim şey bir endpoint, handler, metot, repository, entity, tablo, kolon ya da event. Kenar ise aralarındaki ilişki: çağırıyor, okuyor, yazıyor, eşleniyor, yayınlıyor, tüketiyor.
+
+Tek bir akışta zincirin hâli:
+
+```text
+endpoint:DELETE /api/cart/items/{productId:guid}     giriş noktası
+  └─ RemoveItemHandler.HandleAsync                   handler
+      └─ ICartRepository.SaveAsync                   arayüz (ambiguous)
+          └─ PostgresCartRepository.SaveAsync        implementasyon
+              └─ cart.carts                          tablo
+                  └─ CustomerId, Items, UpdatedAtUtc kolonlar
+```
+
+```mermaid
+flowchart TD
+  src["ModularCommerce kaynak kodu<br/>66 proje, 48'i ürün kodu · 25 endpoint"]
+  build["flowlens build<br/>25-32 saniye · günde bir kez"]
+  g[("graph.json<br/>415 node · 966 kenar · 987 KB")]
+
+  api["HTTP API<br/>0,4-1,9 ms"]
+  docs["out/ · 37 dosya<br/>GitHub'da render oluyor"]
+  tri["flowlens triage<br/>stack trace girdisi"]
+  ev["Ölçüm seti<br/>22 soru"]
+
+  p1["ONBOARDING"]
+  p2["CHANGE IMPACT ANALYSIS"]
+  p3["INCIDENT TRIAGE"]
+  p4["üçünün de ölçülmüş doğruluğu"]
+
+  src --> build --> g
+  g --> docs --> p1
+  g --> api --> p2
+  g --> tri --> p3
+  g --> ev --> p4
+
+  classDef problem stroke-width:3px
+  class p1,p2,p3 problem
+```
+
+Dört adımın tamamı **25-32 saniye** sürüyor, çünkü solution'daki 66 projenin tamamını derlemeyi gerektiriyor. Analiz sonra bunların **48'i** üzerinde koşuyor: test projeleri bilerek dışarıda. Sebep gürültü değil, **sahte kenar**: testler atılabilir consumer'lar tanımlıyor ve generic publish çağrıları yapıyor, ikisi de haritaya gerçekte var olmayan bir yol eklerdi.
+
+Bir HTTP isteğinin arkasında bu iş asla çalışmaz, çalışmasına gerek de yok: pahalı hesap günde bir kez, ucuz sorgu binlerce kez. Ölçülen sorgu süresi **0,4-1,9 ms**.
+
+Ama asıl kazanç performans değil. `graph.json` bir metin dosyası olduğu için repoya commit'leniyor, `git diff` ile karşılaştırılıyor ve elle okunabiliyor. Bu sonuncusu projenin en somut faydasını üretti: testler yeşilken graph'ın üç yerde sessizce yanlış cevap verdiğini fark eden şey, dosyayı satır satır okumaktı.
+
+Üstündeki dört tüketici de aynı dosyadan besleniyor, dolayısıyla dördü birden yanılabilir ama biri diğerinden farklı bir cevap veremez. Dosya hiç yoksa veri uçları açık bir hata dönüyor: gövdesinde hangi yollara bakıldığı ve dosyayı üretecek komut yazılı. Sessiz boş liste yok.
 
 ## 🧱 Üç proje ve bağımlılık yönü
 
@@ -64,7 +117,7 @@ Dosyanın tazeliği elle takip edilmiyor. API her istekte dosyanın değişip de
 
 ## 📐 Yedi adım, yedi çıktı
 
-Proje yedi adımda gelişti. Adımların adları önemli değil, ürettikleri önemli. Üçüncü sütun da en az ikincisi kadar: o adım olmasaydı ne olurdu.
+Yukarıdaki dört katman **ne** inşa edildiğini anlatıyor. Bu tablo **hangi sırayla ve neden**. Adımların adları önemli değil, ürettikleri önemli, ve üçüncü sütun en az ikincisi kadar: o adım olmasaydı ne olurdu.
 
 | Ne üretildi | Hangi problemi çözdü | Olmasaydı |
 |---|---|---|
@@ -78,7 +131,7 @@ Proje yedi adımda gelişti. Adımların adları önemli değil, ürettikleri ö
 
 Son satır bu yazının tezine en yakın olanı. O adım tek satır ürün kodu üretmedi, **ölçüm** üretti. Ve ölçtüğü şeylerin bir kısmı aracın kendi körlükleriydi.
 
-> **Developer notu.** İşin teknik özü tek cümlede: C# derleyicisinin kendisi bir kütüphane, yani kodu çalıştırmadan okuyup anlamlandırabiliyorsunuz. Tablo ve kolon adları ise tahmin edilmiyor, veritabanı eşleme katmanının kendi metadata'sından okunuyor. İsim tahmini ve SQL parse etme yok.
+> **Developer notu.** Tablodaki sıra pazarlık konusu değildi: bir adımın kabul kriterleri karşılanmadan sonraki adıma geçilmedi. Sebep ikinci satırda görünüyor. Endpoint keşfi yanlış olsaydı çağrı zinciri de yanlış yerden başlardı, veri katmanı da o yanlış zincire bağlanırdı, ve hata ancak en sonda, en pahalı yerde ortaya çıkardı.
 
 Doğal dil arayüzünün neden en sona bırakıldığını yukarıda yazdım. Buraya bir cümle daha ekleyeyim: doğruluğa hiçbir şey katmıyor. Analistin endpoint adını bilmek zorunda olmamasını sağlıyor, o kadar. Konfor katmanı, doğruluk katmanı değil.
 
@@ -90,7 +143,7 @@ Buraya kadar anlatılan her şey altyapı. Ekibin çoğunluğunun gördüğü te
 
 `out/README.md` on modülü ve 25 akışı listeliyor, her satır bir dosyaya bağlantı. En üstte üretimin kendi notu duruyor: elle düzenlenmez, ve her üretim aynı girdiden aynı baytları verir.
 
-[GÖRSEL 1: out/README.md, Modüller tablosu ve Akışlar tablosunun ilk 8 satırı]
+[GÖRSEL 1]
 
 Hemen altında bu yazının tezini altı kelimede söyleyen bir uyarı var:
 
@@ -102,7 +155,7 @@ Ve sayfanın sonunda "Veri katmanına dokunmayan (2)" başlıklı bir bölüm du
 
 > Bunlar eksik değil — ölçüldü ve hiçbir tabloya ulaşmıyorlar.
 
-[GÖRSEL 2: out/README.md, Kapsam uyarısı blockquote'u ve "Veri katmanına dokunmayan (2)" bölümü]
+[GÖRSEL 2]
 
 ### Tek soru, tek sayfa
 
@@ -114,7 +167,39 @@ Cevabı `out/flows/delete-api-cart-items-productid-guid.md` veriyor.
 
 **Önce diyagrama bakıyorsunuz.** Endpoint'ten `RemoveItemHandler`'a, oradan iki repository'ye, sondaki silindir kutuya: `cart.carts`. Kabaca cevap on saniyede elinizde.
 
-[GÖRSEL 21: out/flows/delete-api-cart-items-productid-guid.md, GitHub'da render olmuş Mermaid diyagramı]
+```mermaid
+flowchart TD
+  n0["Cart · RemoveItemHandler.HandleAsync"]
+  n1["Cart · CachingCartRepository.GetAsync (ambiguous)"]
+  n2["Cart · CachingCartRepository.RemoveAsync (ambiguous)"]
+  n3["Cart · CachingCartRepository.SaveAsync (ambiguous)"]
+  n4["Cart · PostgresCartRepository.GetAsync (ambiguous)"]
+  n5["Cart · PostgresCartRepository.IsDatabaseUnavailable"]
+  n6["Cart · PostgresCartRepository.RemoveAsync (ambiguous)"]
+  n7["Cart · PostgresCartRepository.SaveAsync (ambiguous)"]
+  n8[["Cart · DELETE /api/cart/items/{productId:guid}"]]
+  n9[("Cart · cart.carts")]
+
+  n0 -->|"1"| n1
+  n0 -->|"1"| n4
+  n0 -->|"2"| n2
+  n0 -->|"2"| n6
+  n0 -->|"3"| n3
+  n0 -->|"3"| n7
+  n1 --> n4
+  n2 --> n6
+  n3 --> n7
+  n4 --> n5
+  n4 ==>|"CartRecord"| n9
+  n6 --> n5
+  n6 ==>|"CartRecord"| n9
+  n7 --> n5
+  n7 ==> n9
+  n8 --> n0
+
+  classDef unseen stroke-dasharray: 4 4,stroke-width:2px
+  class n4,n5,n6,n7 unseen
+```
 
 **Sonra "hangi kolonlar" diye soruyorsunuz.** Veri katmanı tablosu tek satır:
 
@@ -144,11 +229,11 @@ Son cümle listedeki tekrarı açıklıyor: her adım iki repository'ye birden g
 
 Yani bu bir sequence diagram değil ve öyle olmadığını okuyucuya söylüyor.
 
-[GÖRSEL 22: aynı dosya, Veri katmanı tablosu ve Çağrı sırası bölümü, iki `koşullu` adım görünecek şekilde]
+[GÖRSEL 3]
 
 **En son "bu liste tam mı" diye soruyorsunuz.** Son bölüm üç sınır kodu taşıyor: `ambiguous-implementation` (iki repository implementasyonu da graph'ta, hangisinin koştuğu kaydedilmiyor), `second-class-evidence` (bir yazma iddiası dolaylı kanıta dayanıyor), `unmapped-column` (jsonb belgesinin içindeki üç alanın kolonu yok). Üçünün de altında `dosya:satır` listesi var.
 
-[GÖRSEL 23: aynı dosya, Bilinen sınırlar bölümü, üç kod]
+[GÖRSEL 4]
 
 Ve sayfanın kendini ölçen satırı:
 
@@ -156,7 +241,7 @@ Ve sayfanın kendini ölçen satırı:
 
 Neyin gizlendiğini sayarak söylüyor: 18 ara çağrı, 7 utility, 3 arayüz bildirimi. Ölçekte aynı oran, sistemin en büyük akışı olan checkout'ta **24 / 192**. Diyagram grafiğin sekizde birini gösteriyor ve veri katmanında 12 tablo ile 62 kolon listeliyor.
 
-[GÖRSEL 6: out/flows/post-api-ordering-checkout.md, "Diyagram neyi göstermiyor" satırı]
+[GÖRSEL 5]
 
 Dört sorunun dördü tek sayfadan cevaplandı, ve bu sayfaların hiçbiri elle yazılmadı.
 
@@ -168,25 +253,65 @@ Dört sorunun dördü tek sayfadan cevaplandı, ve bu sayfaların hiçbiri elle 
 
 Bu bir okuma, ve okuma kolon yazmaz. Boş liste burada doğru cevap.
 
-[GÖRSEL 9: out/flows/get-api-catalog-products.md, Veri katmanı tablosu]
+[GÖRSEL 6]
 
 `post-api-discovery-search.md` ise daha ilginç: sayfada **"Veri katmanı" bölümü hiç yok**. Boş değil, yok. O modül ham SQL kullanıyor ve araç oraya bakamıyor. Ama sayfa susmuyor, kör olduğu üç satırı adıyla veriyor: `ProductVectorRepository.cs:26`, `:40` ve `:60`.
 
-[GÖRSEL 8: out/flows/post-api-discovery-search.md, sayfanın tamamı]
+```mermaid
+flowchart TD
+  n0["Discovery · SearchProductsHandler.HandleAsync"]
+  n1["Discovery · ProductVectorRepository.SearchAsync"]
+  n2[["Discovery · POST /api/discovery/search"]]
+  n3>"Discovery · HTTP -&gt; HttpEmbeddingService"]
+
+  n0 -->|"1"| n3
+  n0 -->|"2"| n1
+  n2 --> n0
+
+  classDef unseen stroke-dasharray: 4 4,stroke-width:2px
+  class n1 unseen
+```
 
 ### Modül bağımlılık grafiği
 
 `out/modules/dependencies.md` tek ekranda sekiz modül ve dokuz kenar gösteriyor. Üç kenar stili: düz ok sözleşme çağrısı (meşru), kesikli ok event (meşru), kalın ok sözleşme katmanı dışından doğrudan referans, yani ihlal adayı.
 
-[GÖRSEL 11: out/modules/dependencies.md, GitHub'da render olmuş Mermaid]
-[GÖRSEL 12: aynı dosya, üç kenar stilinin legend tablosu]
+```mermaid
+flowchart LR
+  n0["Cart"]
+  n1["Catalog"]
+  n2["Discovery"]
+  n3["Inventory"]
+  n4["Notification"]
+  n5["Ordering"]
+  n6["Payment"]
+  n7["Shared"]
+
+  n1 -.->|"event x2"| n2
+  n3 -->|"contract x1"| n5
+  n5 -->|"contract x2"| n0
+  n5 -->|"contract x1"| n1
+  n5 -->|"contract x4"| n3
+  n5 -.->|"event x1"| n4
+  n5 -->|"contract x2"| n6
+  n7 ==>|"direct x1"| n1
+  n7 ==>|"direct x1"| n3
+
+  classDef flagged stroke-width:3px
+  class n1,n3 flagged
+```
+| Kategori | Kural | Ok |
+|---|---|---|
+| **Sözleşme çağrısı** — meşru | hedef katman `Contracts`, kenar `CALLS` | düz `-->` |
+| **Event** — meşru, en gevşek bağ | `PUBLISHES` / `CONSUMES` | kesikli `-.->` |
+| **Doğrudan referans** — ⚠ ihlal adayı | hedef katman `Application` / `Infrastructure` / `Domain` | kalın `==>` |
 
 İki ihlal adayı çıkmış, ikisi de ters yönde ve ikisi de veri tohumlama kodu. Sayfanın tutumu net:
 
 > `Contracts` dışından doğrudan referanslar. **Bu bir hüküm değil, bir işaret** —
 > kasıtlı bir tercih olabilir; kararı okuyan verir.
 
-[GÖRSEL 13: aynı dosya, İhlal adayları bölümü]
+[GÖRSEL 7]
 
 Ve üreteçte editoryal yargı olduğunu gösteren paragraf:
 
@@ -196,7 +321,7 @@ Ve üreteçte editoryal yargı olduğunu gösteren paragraf:
 
 Her modülün ayrıca kendi sayfası var: endpoint'ler, tablolar, event'ler, bağımlılıklar ve sınırlar. Ordering sayfasındaki event tablosu layout'un tek başına ürettiği bir bulguyu görünür kılıyor: `OrderCancelled` yayınlanıyor, tüketici sütunu **yok** diyor.
 
-[GÖRSEL 15: out/modules/Ordering.md, Event'ler tablosu]
+[GÖRSEL 8]
 
 ## 🚶 Üç senaryo, adım adım
 
@@ -222,23 +347,37 @@ Ve asıl kazanç burada ölçüldü. `cart.carts` tablosuna dokunan beş giriş 
 
 **30 dakikalık bir toplantı, 2 dakikalık bir sorgu oluyor.**
 
-[GÖRSEL 19: GET /backward?node=column:cart.carts.Items cevabı]
+[GÖRSEL 9]
 
 Buradaki değişimi doğru okumak lazım. Yazılımcının rolü ortadan kalkmıyor, **değişiyor**. Analist artık "hangi tablolar etkilenir" diye sormuyor, çünkü o mekanik bilgi araçta duruyor. Ama "bu iş kuralı neden böyle", "bu değişikliği yaparsak müşteri tarafında ne olur", "burada bir yarış durumu var mı" diye sormaya devam ediyor. Araç mekanik olanı devraldı, yargı gerektireni değil.
 
 ### Incident triage
 
-Nöbetçi, 14:40, elinde bir exception:
+Nöbetçi, 14:40, elinde bir exception. Log'dan kopyalayıp bir dosyaya yapıştırıyor ve komutu çalıştırıyor:
 
 ```bash
-flowlens triage --stack-trace crash.txt
+dotnet run --project src/FlowLens.Cli -c Release -- triage --stack-trace crash.txt
 ```
 
-Rapor üç şeyi birden veriyor. **Giriş noktaları**: `POST /api/inventory/reservations` ve `POST /api/ordering/checkout`, yani iki farklı ekip. **Dokunulan tablolar**: `inventory.reservations` yazılıyor, `inventory.stock_items` hem okunuyor hem yazılıyor. **Son değişiklikler**: 3 dosya, en yenisi `0037b5a`.
+`crash.txt` özel bir format değil, yığın izinin ham metni; adı da önemli değil, `--stack-trace` neyi gösterirseniz onu okuyor. Dosya yerine boru da olur, `--stack-trace -` standart girdiden okur.
+
+Komut üç şey **okuyor** ve hiçbirini değiştirmiyor: bu dosyayı, `graph.json`'ı, ve hedef reponun `git log` çıktısını. Solution yüklenmiyor, yani buradaki cevap 25-32 saniye değil saniyeler sürüyor.
+
+Repo yolunu ayrıca sormuyor, çıkarıyor: yığın izi hata ayıklama sembollerinden gelen **mutlak** yollar taşıyor, graph'taki her düğüm aynı dosyanın **repo-göreli** yolunu taşıyor, ve kök ikisinin farkı. Elle `--repo` ile de verilebiliyor; verildiğinde asla sessizce başkasıyla değiştirilmiyor.
+
+Rapor üç şeyi birden veriyor. **Giriş noktaları**: `POST /api/inventory/reservations` ve `POST /api/ordering/checkout`, yani iki farklı ekip. **Dokunulan tablolar**: `inventory.reservations` yazılıyor, `inventory.stock_items` hem okunuyor hem yazılıyor. **Son değişiklikler**: üç dosyanın her birinin son commit'leri, en yenisi `30109b3 rate limiting`.
 
 Nöbetçinin ilk sorusu "kimi arayacağım" idi ve cevap raporun ortasında duruyor.
 
-[GÖRSEL 17: flowlens triage çıktısı, Giriş noktaları, dokunulan tablolar ve son değişiklikler bölümleri]
+[GÖRSEL 10]
+
+> **Denemek isterseniz.** Yukarıdaki rapor uydurma değil, repodaki gerçek bir yığın izinin çıktısı. Beş tane duruyor ve beşi de gerçek: dördü çalışan bir Postgres örneğine karşı yakalandı, biri altyapı gerektirmeden. Hiçbiri elle yazılmadı.
+>
+> ```bash
+> dotnet run --project src/FlowLens.Cli -c Release -- triage --stack-trace tests/FlowLens.Tests/Fixtures/StackTraces/A-inventory-reserve.txt
+> ```
+>
+> İçlerinden biri (`C-money-add.txt`) bilerek **başarısız** oluyor ve `exit 4` veriyor: aradığı çerçeve graph'ta yok. Aracın en önemli davranışını görmek isterseniz onu çalıştırın, çünkü *"çağrı yok"* demiyor, *"o çerçeveyi göremedim"* diyor.
 
 ## 🔌 Gerçek dünya girdisi: Kibana
 
@@ -280,7 +419,7 @@ Bu bölüm yazının en önemli kısmı, çünkü tez tam olarak burada sınanı
 
 Tek bir ortalama vermiyorum, çünkü ortalama aracın nerede kör olduğunu gizler. Bu sekiz sayının ortalaması makul bir rakam verirdi ve içindeki iki sıfırı görünmez yapardı.
 
-[GÖRSEL 20: evals/report.md, eksen eksen recall tablosu]
+[GÖRSEL 11]
 
 Dört körlük, sebepleriyle:
 
@@ -298,7 +437,7 @@ Ve şimdi Kibana testinin üçüncü satırı. Log öneki başlığa yapıştı�
 
 Çökme değil, **kendinden emin yanlış bir alan**. Araç kendi çıktısında da aynı kuralı uyguluyor: emin olmadığı alanı doldurmak yerine boş bırakıyor, gerisini eksiksiz veriyor.
 
-[GÖRSEL 18: flowlens triage çıktısı, "Hata noktası, graph'ın bakamadığı bir bölgede" bloğu]
+[GÖRSEL 12]
 
 Bir aracın en tehlikeli çıktısı boş kümedir. Doğru boş küme (bir okuma endpoint'inin sıfır kolon raporlaması) ile yanlış boş küme, çıktıda birbirinden ayırt edilemiyorsa, tüketici ikisini de tam güvenle okur. Bu araçta ayırt ediliyor: birincisi sessiz, ikincisi `dosya:satır` ile konuşuyor.
 
@@ -310,6 +449,8 @@ Bir aracın en tehlikeli çıktısı boş kümedir. Doğru boş küme (bir okuma
 > - **Minimal API ya da Controller.** Endpoint keşfi bu iki şekle bağlı.
 > - **Tek solution.** Çoklu repo desteği bilinçli olarak kapsam dışı.
 > - **Derlenmiş hedef.** Veritabanı modeli derlenmiş assembly'den okunuyor, kaynak koddan değil.
+>
+> Yazı boyunca `flowlens ...` yazdım; bu bir kısaltma. Araç bir global tool olarak paketlenmiş değil, repoda `dotnet run --project src/FlowLens.Cli -c Release -- <komut>` olarak koşuyor.
 >
 > **Nereden başlanır:** graph üretmekten değil, **saymaktan**. Solution'ı yükleyip "kaç proje, kaç metot" demekten. Bu bir ısınma egzersizi değil. Bu projede önceden çıkarılmış envanter 68 proje diyordu, doğrusu **66** çıktı. Araç ilk faydasını daha ortada bir graph yokken verdi.
 >
